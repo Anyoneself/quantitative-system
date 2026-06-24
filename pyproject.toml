@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantitative-system"
+version = "0.1.0"
+description = "股票量价分析 CLI"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+quant = "quant_system.cli:main"
+quant-web = "quant_system.web:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+quant_system = ["web_static/*"]

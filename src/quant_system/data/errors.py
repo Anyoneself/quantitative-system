@@ -1,0 +1,2 @@
+class DataRefreshError(RuntimeError):
+    pass
