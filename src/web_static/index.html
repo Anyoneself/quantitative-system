@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>量价机器学习决策台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace">
+        <aside class="control-panel">
+          <div class="brand">
+            <div class="brand-mark">Q</div>
+            <div>
+              <h1>量价决策台</h1>
+              <p>公开行情数据 · 机器学习预测</p>
+            </div>
+          </div>
+
+          <div class="mode-tabs" role="tablist" aria-label="功能切换">
+            <button id="single-tab" class="mode-tab active" type="button">单股分析</button>
+            <button id="scan-tab" class="mode-tab" type="button">全 A 扫描</button>
+          </div>
+
+          <form id="advisor-form" class="form mode-form">
+            <div class="field-grid">
+              <label>
+                <span>股票代码</span>
+                <input id="symbol" inputmode="numeric" maxlength="6" placeholder="601988" />
+              </label>
+
+              <label>
+                <span>机器学习算法</span>
+                <select id="algorithm">
+                  <option value="knn">KNN 相似样本</option>
+                  <option value="weighted_knn">加权 KNN</option>
+                  <option value="logistic_regression">逻辑回归</option>
+                </select>
+              </label>
+            </div>
+
+            <button id="submit-button" type="submit">
+              <span class="button-light"></span>
+              开始分析
+            </button>
+          </form>
+
+          <form id="scan-form" class="form mode-form hidden">
+            <div class="field-grid">
+              <label>
+                <span>机器学习算法</span>
+                <select id="scan-algorithm">
+                  <option value="knn">KNN 相似样本</option>
+                  <option value="weighted_knn">加权 KNN</option>
+                  <option value="logistic_regression">逻辑回归</option>
+                </select>
+              </label>
+
+            </div>
+
+            <div class="scan-actions">
+              <button id="scan-once-button" type="submit">
+                <span class="button-light"></span>
+                启动全 A 扫描
+              </button>
+              <button id="scan-auto-button" class="secondary-button" type="button">停止扫描</button>
+            </div>
+          </form>
+
+          <div class="mini-note">
+            <span></span>
+            使用免登录公开行情数据。
+          </div>
+        </aside>
+
+        <section class="result-panel">
+          <div id="empty-state" class="empty-state">
+            <canvas id="ambient-chart" width="900" height="260" aria-hidden="true"></canvas>
+            <div>
+              <p class="eyebrow">READY</p>
+              <h2>输入股票代码后查看下一交易日买入建议</h2>
+              <p>也可以切换到全 A 扫描，手动启动一轮 Top 10 筛选。</p>
+            </div>
+          </div>
+
+          <div id="loading-state" class="loading-state hidden">
+            <div class="loader"></div>
+            <p>正在抓取行情数据并训练模型...</p>
+          </div>
+
+          <div id="error-state" class="error-state hidden"></div>
+
+          <article id="scan-view" class="scan-view hidden">
+            <header class="advice-header">
+              <div>
+                <p class="eyebrow" id="scan-meta">MARKET SCAN</p>
+                <h2>全 A Top 10 买入观察池</h2>
+              </div>
+              <div class="score-card">
+                <span>当前入榜</span>
+                <strong id="scan-count">0</strong>
+              </div>
+            </header>
+
+            <section class="scan-summary">
+              <div>
+                <span>读取股票数</span>
+                <strong id="scan-fetched">0</strong>
+              </div>
+              <div>
+                <span>扫描股票数</span>
+                <strong><span id="scan-finished">0</span>/<span id="scan-total">--</span></strong>
+              </div>
+              <div>
+                <span>剔除数量</span>
+                <strong id="scan-skipped">0</strong>
+              </div>
+              <div>
+                <span>失败数量</span>
+                <strong id="scan-failed">0</strong>
+              </div>
+              <div>
+                <span>刷新状态</span>
+                <strong id="scan-refresh-status">待启动</strong>
+              </div>
+            </section>
+
+            <section class="scan-table-wrap">
+              <table class="scan-table">
+                <thead>
+                  <tr>
+                    <th>排名</th>
+                    <th>股票</th>
+                    <th>建议</th>
+                    <th>评分</th>
+                    <th>相似上涨</th>
+                    <th>核心理由</th>
+                    <th>风险</th>
+                  </tr>
+                </thead>
+                <tbody id="scan-results"></tbody>
+              </table>
+              <div id="scan-empty" class="scan-empty hidden">正在等待第一只股票完成分析。</div>
+            </section>
+          </article>
+
+          <article id="advice-view" class="advice-view hidden">
+            <header class="advice-header">
+              <div>
+                <p class="eyebrow" id="stock-meta">--</p>
+                <h2 id="headline">--</h2>
+              </div>
+              <div class="score-card">
+                <span>机器学习评分</span>
+                <strong id="score">--</strong>
+              </div>
+            </header>
+
+            <section class="market-strip">
+              <div>
+                <span>收盘价</span>
+                <strong id="close-price">--</strong>
+              </div>
+              <div>
+                <span>1 日涨跌</span>
+                <strong id="return-1d">--</strong>
+              </div>
+              <div>
+                <span>5 日涨跌</span>
+                <strong id="return-5d">--</strong>
+              </div>
+              <div>
+                <span>成交量 / 20 日均量</span>
+                <strong id="volume-ratio">--</strong>
+              </div>
+            </section>
+
+            <section class="chart-card">
+              <div class="section-title">
+                <h3>近 21 个交易日</h3>
+                <span id="data-range">--</span>
+              </div>
+              <canvas id="stock-chart" width="1100" height="360"></canvas>
+            </section>
+
+            <section class="detail-grid">
+              <div class="detail-card">
+                <h3>核心理由</h3>
+                <ol id="reasons"></ol>
+              </div>
+              <div class="detail-card">
+                <h3>数据证据</h3>
+                <ol id="evidence"></ol>
+              </div>
+              <div class="detail-card risk">
+                <h3>风险提示</h3>
+                <ol id="risks"></ol>
+              </div>
+              <div class="detail-card">
+                <h3>机器学习预测</h3>
+                <div id="ml-detail" class="metric-list"></div>
+              </div>
+              <div class="detail-card">
+                <h3>小白解读</h3>
+                <ol id="beginner"></ol>
+              </div>
+              <div class="detail-card wide">
+                <h3>下一步观察</h3>
+                <ol id="observations"></ol>
+              </div>
+            </section>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js?v=20260626"></script>
+  </body>
+</html>

@@ -10,11 +10,12 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
-quant = "quant_system.cli:main"
-quant-web = "quant_system.web:main"
+quant = "cli:main"
+quant-web = "web:main"
+
+[tool.setuptools]
+py-modules = ["cli", "web"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-quant_system = ["web_static/*"]

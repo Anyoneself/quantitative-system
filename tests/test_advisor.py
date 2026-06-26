@@ -5,16 +5,16 @@ import threading
 from concurrent.futures import Future
 from unittest.mock import patch
 
-from quant_system.analysis.advisor import generate_advice
-from quant_system.analysis.indicators import calculate_indicators
-from quant_system.analysis.market_scanner import MarketScanner
-from quant_system.analysis.ml_model import predict_next_day_buy_probability
-from quant_system.analysis.scanner import ScanResult, format_scan_report, scan_top_stocks
-from quant_system.analysis.service import build_advice
-from quant_system.analysis.patterns import detect_patterns
-from quant_system.data.errors import DataRefreshError
-from quant_system.data.models import PriceVolumeBar, StockInfo
-from quant_system.output.formatter import format_advice
+from analysis.advisor import generate_advice
+from analysis.indicators import calculate_indicators
+from analysis.market_scanner import MarketScanner
+from analysis.ml_model import predict_next_day_buy_probability
+from analysis.scanner import ScanResult, format_scan_report, scan_top_stocks
+from analysis.service import build_advice
+from analysis.patterns import detect_patterns
+from data.errors import DataRefreshError
+from data.models import PriceVolumeBar, StockInfo
+from output.formatter import format_advice
 
 
 class AdvisorTest(unittest.TestCase):
@@ -46,6 +46,16 @@ class AdvisorTest(unittest.TestCase):
         self.assertEqual(prediction.algorithm, "weighted_knn")
         self.assertGreaterEqual(prediction.buy_probability, 0)
         self.assertLessEqual(prediction.buy_probability, 1)
+        self.assertEqual(prediction.neighbor_count, 7)
+
+    def test_knn_neighbor_count_grows_with_sample_count(self) -> None:
+        bars = _build_bars(250)
+
+        prediction = predict_next_day_buy_probability(bars, "knn")
+
+        self.assertIsNotNone(prediction)
+        self.assertEqual(prediction.sample_count, 229)
+        self.assertEqual(prediction.neighbor_count, 15)
 
     def test_logistic_regression_prediction_returns_probability(self) -> None:
         bars = _build_bars_for_limit_up()
@@ -119,8 +129,8 @@ class AdvisorTest(unittest.TestCase):
         )
 
         scanner = MarketScanner()
-        with patch("quant_system.analysis.market_scanner.iter_a_stock_symbols", return_value=iter(stocks)):
-            with patch("quant_system.analysis.market_scanner._analyze_market_stock", side_effect=fake_market_analyzer):
+        with patch("analysis.market_scanner.iter_a_stock_symbols", return_value=iter(stocks)):
+            with patch("analysis.market_scanner._analyze_market_stock", side_effect=fake_market_analyzer):
                 scanner._run_id = 1
                 scanner._run_once(1, threading.Event(), "knn", 10)
 
@@ -141,7 +151,7 @@ class AdvisorTest(unittest.TestCase):
 
     def test_market_scanner_keeps_error_when_universe_empty(self) -> None:
         scanner = MarketScanner()
-        with patch("quant_system.analysis.market_scanner.iter_a_stock_symbols", side_effect=DataRefreshError("列表为空")):
+        with patch("analysis.market_scanner.iter_a_stock_symbols", side_effect=DataRefreshError("列表为空")):
             scanner._run_id = 1
             result = scanner._run_once(1, threading.Event(), "knn", 10)
 
@@ -154,9 +164,9 @@ class AdvisorTest(unittest.TestCase):
     def test_market_scanner_restart_creates_new_run(self) -> None:
         scanner = MarketScanner()
         with patch.object(scanner, "_run_loop"):
-            scanner.start("knn", 10, 600)
+            scanner.start("knn", 10)
             first_run_id = scanner._run_id
-            scanner.start("weighted_knn", 10, 600)
+            scanner.start("weighted_knn", 10)
 
         self.assertGreater(scanner._run_id, first_run_id)
 
@@ -165,7 +175,7 @@ class AdvisorTest(unittest.TestCase):
         future = Future()
         submitted_at = {future: 0.0}
 
-        with patch("quant_system.analysis.market_scanner.time.time", return_value=31.0):
+        with patch("analysis.market_scanner.time.time", return_value=31.0):
             remaining = scanner._remove_timed_out_futures({future}, submitted_at, 30)
 
         snapshot = scanner.snapshot()
@@ -209,6 +219,28 @@ def _build_bars_for_limit_up():
             amount=80_000_000,
         )
     )
+    return bars
+
+
+def _build_bars(count: int):
+    from datetime import date, timedelta
+
+    bars = []
+    start = date(2025, 1, 1)
+    for index in range(count):
+        close = 10 + index * 0.03 + (0.15 if index % 7 == 0 else 0)
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=index),
+                open=close - 0.03,
+                high=close + 0.08,
+                low=close - 0.08,
+                close=close,
+                volume=1000 + index * 3,
+                amount=80_000_000,
+            )
+        )
     return bars
 
 if __name__ == "__main__":
