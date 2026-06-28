@@ -26,12 +26,12 @@ def _format_text(advice: Advice) -> str:
                 f"数据截止日：{indicators.data_end_date}",
                 f"样本区间：最近 {indicators.sample_days} 个交易日",
                 f"建议：{advice.action}",
-                f"机器学习评分：{advice.score}",
+                f"综合评分：{advice.score}",
                 "",
             ]
         )
     else:
-        lines.extend([f"建议：{advice.action}", f"机器学习评分：{advice.score}", ""])
+        lines.extend([f"建议：{advice.action}", f"综合评分：{advice.score}", ""])
 
     lines.append("核心理由：")
     lines.extend(_numbered_lines(advice.reasons))
@@ -49,6 +49,10 @@ def _format_text(advice: Advice) -> str:
     if advice.ml_prediction:
         lines.extend(["", "机器学习预测："])
         lines.extend(_ml_lines(advice.ml_prediction))
+
+    if advice.chan_structure:
+        lines.extend(["", "缠论结构辅助："])
+        lines.extend(_chan_lines(advice.chan_structure))
 
     lines.append("")
     lines.append("后续观察：")
@@ -86,6 +90,20 @@ def _ml_lines(prediction) -> list[str]:
                 f"- 最近邻上涨样本数：{prediction.positive_count}",
             ]
         )
+    return lines
+
+
+def _chan_lines(chan_structure) -> list[str]:
+    lines = [
+        f"- 结构状态：{chan_structure.trend}",
+        f"- 当前位置：{chan_structure.position}",
+        f"- 买点候选：{chan_structure.buy_signal}",
+        f"- 风险结构：{chan_structure.risk_signal}",
+        f"- 结构调整分：{chan_structure.score_adjustment:+d}",
+        f"- 结构建议：{chan_structure.recommendation}",
+    ]
+    if chan_structure.center:
+        lines.append(f"- 最近中枢：{chan_structure.center.lower:.2f} - {chan_structure.center.upper:.2f}")
     return lines
 
 

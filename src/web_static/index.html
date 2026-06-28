@@ -135,6 +135,7 @@
                     <th>建议</th>
                     <th>评分</th>
                     <th>相似上涨</th>
+                    <th>缠论结构</th>
                     <th>核心理由</th>
                     <th>风险</th>
                   </tr>
@@ -152,7 +153,7 @@
                 <h2 id="headline">--</h2>
               </div>
               <div class="score-card">
-                <span>机器学习评分</span>
+                <span>综合评分</span>
                 <strong id="score">--</strong>
               </div>
             </header>
@@ -178,10 +179,39 @@
 
             <section class="chart-card">
               <div class="section-title">
-                <h3>近 21 个交易日</h3>
+                <h3>价格结构图</h3>
                 <span id="data-range">--</span>
               </div>
               <canvas id="stock-chart" width="1100" height="360"></canvas>
+            </section>
+
+            <section class="chan-panel">
+              <div class="section-title">
+                <h3>缠论结构辅助</h3>
+                <span id="chan-adjustment">--</span>
+              </div>
+              <div class="chan-summary">
+                <div>
+                  <span>结构状态</span>
+                  <strong id="chan-trend">--</strong>
+                </div>
+                <div>
+                  <span>当前位置</span>
+                  <strong id="chan-position">--</strong>
+                </div>
+                <div>
+                  <span>买点候选</span>
+                  <strong id="chan-buy">--</strong>
+                </div>
+                <div>
+                  <span>风险结构</span>
+                  <strong id="chan-risk">--</strong>
+                </div>
+              </div>
+              <div class="chan-note">
+                <p id="chan-recommendation">--</p>
+                <p id="chan-explanation">--</p>
+              </div>
             </section>
 
             <section class="detail-grid">
@@ -215,6 +245,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=20260626"></script>
+    <script src="/app.js?v=20260628"></script>
   </body>
 </html>

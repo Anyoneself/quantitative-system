@@ -19,6 +19,7 @@ class ScanResult:
     probability: float
     reason: str
     risk: str
+    chan_summary: str = ""
 
 
 def load_symbols_from_file(path: Path) -> list[str]:
@@ -58,6 +59,7 @@ def scan_top_stocks(
                 probability=advice.ml_prediction.buy_probability,
                 reason=_join_scan_text(advice.reasons, advice.evidence),
                 risk=advice.risks[0] if advice.risks else "未发现主要量价风险",
+                chan_summary=_chan_scan_summary(advice),
             )
         )
 
@@ -78,6 +80,7 @@ def format_scan_report(results: list[ScanResult]) -> str:
                 f"   建议：{item.action}，评分：{item.score}，历史相似上涨占比：{item.probability * 100:.2f}%",
                 f"   理由：{item.reason}",
                 f"   风险：{item.risk}",
+                f"   缠论：{item.chan_summary or '无结构摘要'}",
             ]
         )
     return "\n".join(lines)
@@ -105,3 +108,10 @@ def _join_scan_text(reasons: list[str], evidence: list[str]) -> str:
         items.append(reasons[0])
     items.extend(evidence[:2])
     return "；".join(items) if items else "无明确理由"
+
+
+def _chan_scan_summary(advice: Advice) -> str:
+    if not advice.chan_structure:
+        return ""
+    chan = advice.chan_structure
+    return f"{chan.trend} / {chan.position} / {chan.buy_signal} / {chan.risk_signal} / 调整{chan.score_adjustment:+d}"

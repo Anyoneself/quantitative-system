@@ -108,11 +108,13 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
 
             bars = fetch_bars(symbol)
             advice = build_advice(symbol, bars, algorithm)
+            chart_bars = bars[-90:]
             self._send_json(
                 {
                     "ok": True,
                     "advice": advice_to_dict(advice),
-                    "chart": _chart_payload(bars),
+                    "chart": _chart_payload(chart_bars),
+                    "chan": advice.chan_structure.to_dict() if advice.chan_structure else None,
                     "beginner": _beginner_payload(advice),
                 }
             )
@@ -230,11 +232,12 @@ def _parse_int(value, default: int) -> int:
 
 
 def _chart_payload(bars) -> dict:
-    recent_bars = bars[-21:]
     return {
-        "dates": [bar.trade_date.isoformat() for bar in recent_bars],
-        "closes": [bar.close for bar in recent_bars],
-        "volumes": [bar.volume for bar in recent_bars],
+        "dates": [bar.trade_date.isoformat() for bar in bars],
+        "highs": [bar.high for bar in bars],
+        "lows": [bar.low for bar in bars],
+        "closes": [bar.close for bar in bars],
+        "volumes": [bar.volume for bar in bars],
     }
 
 

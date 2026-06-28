@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from analysis.advisor import Advice, generate_advice, make_no_data_advice
+from analysis.chan_theory import analyze_chan_structure
 from analysis.indicators import calculate_indicators
 from analysis.ml_model import predict_next_day_buy_probability
 from analysis.patterns import detect_patterns
@@ -28,4 +29,5 @@ def build_advice(symbol: str, bars: list[PriceVolumeBar], algorithm: str) -> Adv
 
     patterns = detect_patterns(indicators)
     ml_prediction = predict_next_day_buy_probability(bars, algorithm)
-    return generate_advice(indicators, patterns, ml_prediction)
+    chan_structure = analyze_chan_structure(bars[-90:])
+    return generate_advice(indicators, patterns, ml_prediction, chan_structure)

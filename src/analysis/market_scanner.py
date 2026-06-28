@@ -307,6 +307,7 @@ def _analyze_market_stock(symbol: str, name: str, algorithm: str) -> ScanResult 
         probability=advice.ml_prediction.buy_probability,
         reason=_join_market_reason(advice.reasons, advice.evidence),
         risk=advice.risks[0] if advice.risks else "未发现主要量价风险",
+        chan_summary=_chan_market_summary(advice),
     )
 
 
@@ -320,6 +321,13 @@ def _join_market_reason(reasons: list[str], evidence: list[str]) -> str:
         items.append(reasons[0])
     items.extend(evidence[:2])
     return "；".join(items) if items else "无明确理由"
+
+
+def _chan_market_summary(advice) -> str:
+    if not advice.chan_structure:
+        return ""
+    chan = advice.chan_structure
+    return f"{chan.trend} / {chan.position} / {chan.buy_signal} / {chan.risk_signal} / 调整{chan.score_adjustment:+d}"
 
 
 def _format_time(timestamp: float) -> str:

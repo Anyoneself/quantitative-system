@@ -343,7 +343,8 @@ button:hover .button-light {
 }
 
 .market-strip,
-.scan-summary {
+.scan-summary,
+.chan-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
@@ -351,7 +352,9 @@ button:hover .button-light {
 
 .market-strip div,
 .scan-summary div,
+.chan-summary div,
 .chart-card,
+.chan-panel,
 .detail-card {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -359,19 +362,49 @@ button:hover .button-light {
 }
 
 .market-strip div,
-.scan-summary div {
+.scan-summary div,
+.chan-summary div {
   padding: 16px;
 }
 
 .market-strip strong,
-.scan-summary strong {
+.scan-summary strong,
+.chan-summary strong {
   display: block;
   margin-top: 8px;
   font-size: 22px;
 }
 
-.chart-card {
+.chan-summary span {
+  color: var(--muted);
+}
+
+.chart-card,
+.chan-panel {
   padding: 18px;
+}
+
+.chan-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.chan-note {
+  border: 1px solid rgba(217, 182, 106, 0.22);
+  border-radius: 8px;
+  background: rgba(217, 182, 106, 0.08);
+  padding: 14px 16px;
+  color: #dce8e2;
+  line-height: 1.75;
+}
+
+.chan-note p {
+  margin: 0;
+}
+
+.chan-note p + p {
+  margin-top: 8px;
+  color: var(--muted);
 }
 
 .section-title {
@@ -470,6 +503,11 @@ button:hover .button-light {
   white-space: nowrap;
 }
 
+.scan-table td:nth-child(6) {
+  color: #dce8e2;
+  min-width: 180px;
+}
+
 .scan-table td:nth-child(2) strong,
 .scan-table td:nth-child(2) span {
   display: block;
@@ -501,6 +539,7 @@ button:hover .button-light {
 
   .market-strip,
   .scan-summary,
+  .chan-summary,
   .detail-grid {
     grid-template-columns: 1fr;
   }

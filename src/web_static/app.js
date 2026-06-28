@@ -91,6 +91,7 @@ function renderAdvice(payload) {
   const indicators = advice.indicators;
   const prediction = advice.ml_prediction;
   const beginner = payload.beginner;
+  const chan = payload.chan;
 
   document.querySelector("#stock-meta").textContent =
     `${indicators.symbol} · ${indicators.name || "未知"} · ${indicators.analysis_date}`;
@@ -102,7 +103,7 @@ function renderAdvice(payload) {
   document.querySelector("#return-5d").textContent = formatPercent(indicators.return_5d);
   document.querySelector("#volume-ratio").textContent = indicators.volume_ratio_20d.toFixed(2);
   document.querySelector("#data-range").textContent =
-    `${indicators.data_end_date} · ${indicators.sample_days} 个交易日`;
+    `${payload.chart.dates[payload.chart.dates.length - 1]} · ${payload.chart.dates.length} 个交易日`;
 
   renderList("#reasons", advice.reasons);
   renderList("#evidence", advice.evidence || []);
@@ -110,7 +111,8 @@ function renderAdvice(payload) {
   renderList("#observations", advice.observations);
   renderList("#beginner", [...beginner.plain_language, ...beginner.next_steps]);
   renderMl(prediction);
-  drawStockChart(payload.chart);
+  renderChan(chan);
+  drawStockChart(payload.chart, chan);
 }
 
 async function startMarketScan() {
@@ -220,6 +222,7 @@ function renderMarketScan(snapshot) {
     appendCell(row, item.action);
     appendCell(row, String(item.score));
     appendCell(row, formatPercent(item.probability));
+    appendCell(row, item.chan_summary || "--");
     appendCell(row, item.reason);
     appendCell(row, item.risk);
     tbody.appendChild(row);
@@ -282,7 +285,19 @@ function renderMl(prediction) {
   });
 }
 
-function drawStockChart(chart) {
+function renderChan(chan) {
+  if (!chan) return;
+  document.querySelector("#chan-trend").textContent = chan.trend;
+  document.querySelector("#chan-position").textContent = chan.position;
+  document.querySelector("#chan-buy").textContent = chan.buy_signal;
+  document.querySelector("#chan-risk").textContent = chan.risk_signal;
+  const sign = chan.score_adjustment > 0 ? "+" : "";
+  document.querySelector("#chan-adjustment").textContent = `结构调整 ${sign}${chan.score_adjustment}`;
+  document.querySelector("#chan-recommendation").textContent = chan.recommendation;
+  document.querySelector("#chan-explanation").textContent = chan.explanation;
+}
+
+function drawStockChart(chart, chan) {
   const canvas = document.querySelector("#stock-chart");
   const ctx = canvas.getContext("2d");
   const width = canvas.width;
@@ -290,9 +305,12 @@ function drawStockChart(chart) {
   ctx.clearRect(0, 0, width, height);
 
   const closes = chart.closes;
+  const highs = chart.highs || closes;
+  const lows = chart.lows || closes;
   const volumes = chart.volumes;
-  const minClose = Math.min(...closes);
-  const maxClose = Math.max(...closes);
+  const centerPrices = chan && chan.center ? [chan.center.lower, chan.center.upper] : [];
+  const minClose = Math.min(...lows, ...centerPrices);
+  const maxClose = Math.max(...highs, ...centerPrices);
   const maxVolume = Math.max(...volumes);
   const pad = 34;
   const chartHeight = height * 0.68;
@@ -300,6 +318,7 @@ function drawStockChart(chart) {
   const volumeHeight = height - volumeTop - 20;
 
   drawGrid(ctx, width, height, pad);
+  drawChanCenter(ctx, chan, closes.length, minClose, maxClose, width, chartHeight, pad);
 
   ctx.lineWidth = 3;
   ctx.strokeStyle = "#58d6a6";
@@ -312,6 +331,9 @@ function drawStockChart(chart) {
   });
   ctx.stroke();
 
+  drawChanStrokes(ctx, chan, closes.length, minClose, maxClose, width, chartHeight, pad);
+  drawChanPoints(ctx, chan, closes.length, minClose, maxClose, width, chartHeight, pad);
+
   const barWidth = (width - pad * 2) / volumes.length * 0.55;
   volumes.forEach((value, index) => {
     const x = pad + (index / (volumes.length - 1)) * (width - pad * 2) - barWidth / 2;
@@ -323,6 +345,61 @@ function drawStockChart(chart) {
   ctx.fillStyle = "#9ba9a3";
   ctx.font = "22px sans-serif";
   ctx.fillText(`收盘 ${formatNumber(closes[closes.length - 1])}`, pad, 28);
+}
+
+function drawChanCenter(ctx, chan, pointCount, minClose, maxClose, width, chartHeight, pad) {
+  if (!chan || !chan.center) return;
+  const center = chan.center;
+  const startX = xForIndex(center.start_index, width, pad, pointCount);
+  const endX = xForIndex(center.end_index, width, pad, pointCount);
+  const upperY = yForPrice(center.upper, minClose, maxClose, chartHeight, pad);
+  const lowerY = yForPrice(center.lower, minClose, maxClose, chartHeight, pad);
+  ctx.fillStyle = "rgba(217, 182, 106, 0.14)";
+  ctx.fillRect(startX, upperY, Math.max(8, endX - startX), lowerY - upperY);
+  ctx.strokeStyle = "rgba(217, 182, 106, 0.68)";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(startX, upperY, Math.max(8, endX - startX), lowerY - upperY);
+}
+
+function drawChanStrokes(ctx, chan, pointCount, minClose, maxClose, width, chartHeight, pad) {
+  if (!chan || !chan.strokes) return;
+  ctx.lineWidth = 2;
+  chan.strokes.forEach((stroke) => {
+    const startX = xForIndex(stroke.start_index, width, pad, pointCount);
+    const endX = xForIndex(stroke.end_index, width, pad, pointCount);
+    const startY = yForPrice(stroke.start_price, minClose, maxClose, chartHeight, pad);
+    const endY = yForPrice(stroke.end_price, minClose, maxClose, chartHeight, pad);
+    ctx.strokeStyle = stroke.direction === "up" ? "rgba(88, 214, 166, 0.92)" : "rgba(255, 125, 125, 0.88)";
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+  });
+}
+
+function drawChanPoints(ctx, chan, pointCount, minClose, maxClose, width, chartHeight, pad) {
+  if (!chan || !chan.points) return;
+  chan.points.forEach((point) => {
+    const x = xForIndex(point.index, width, pad, pointCount);
+    const y = yForPrice(point.price, minClose, maxClose, chartHeight, pad);
+    ctx.fillStyle = point.kind === "top" ? "#ff7d7d" : "#d9b66a";
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(237, 243, 239, 0.82)";
+    ctx.font = "14px sans-serif";
+    ctx.fillText(point.kind === "top" ? "顶" : "底", x + 7, y - 7);
+  });
+}
+
+function xForIndex(index, width, pad, pointCount) {
+  const count = pointCount || 90;
+  if (count <= 1) return pad;
+  return pad + (index / (count - 1)) * (width - pad * 2);
+}
+
+function yForPrice(price, minClose, maxClose, chartHeight, pad) {
+  return pad + (1 - normalize(price, minClose, maxClose)) * (chartHeight - pad);
 }
 
 function drawGrid(ctx, width, height, pad) {

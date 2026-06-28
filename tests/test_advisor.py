@@ -5,6 +5,7 @@ import threading
 from concurrent.futures import Future
 from unittest.mock import patch
 
+from analysis.chan_theory import analyze_chan_structure
 from analysis.advisor import generate_advice
 from analysis.indicators import calculate_indicators
 from analysis.market_scanner import MarketScanner
@@ -57,6 +58,26 @@ class AdvisorTest(unittest.TestCase):
         self.assertEqual(prediction.sample_count, 229)
         self.assertEqual(prediction.neighbor_count, 15)
 
+    def test_chan_structure_detects_points_strokes_and_center(self) -> None:
+        bars = _build_chan_bars()
+
+        result = analyze_chan_structure(bars)
+
+        self.assertGreaterEqual(len(result.points), 4)
+        self.assertGreaterEqual(len(result.strokes), 3)
+        self.assertIsNotNone(result.center)
+        self.assertIn(result.buy_signal, {"二买候选", "三买候选", "无"})
+        self.assertTrue(result.recommendation)
+
+    def test_build_advice_includes_chan_structure(self) -> None:
+        bars = _build_bars(250)
+
+        advice = build_advice("600519", bars, "knn")
+
+        self.assertIsNotNone(advice.chan_structure)
+        self.assertTrue(any("缠论结构" in item for item in advice.evidence))
+        self.assertIn("缠论结构辅助", format_advice(advice))
+
     def test_logistic_regression_prediction_returns_probability(self) -> None:
         bars = _build_bars_for_limit_up()
 
@@ -91,6 +112,7 @@ class AdvisorTest(unittest.TestCase):
                 indicators=advice.indicators,
                 patterns=advice.patterns,
                 ml_prediction=advice.ml_prediction,
+                chan_structure=advice.chan_structure,
             )
 
         results = scan_top_stocks(
@@ -238,6 +260,28 @@ def _build_bars(count: int):
                 low=close - 0.08,
                 close=close,
                 volume=1000 + index * 3,
+                amount=80_000_000,
+            )
+        )
+    return bars
+
+
+def _build_chan_bars():
+    from datetime import date, timedelta
+
+    closes = [10, 11, 12, 11, 10, 11, 12.2, 11.1, 10.4, 11.4, 12.6, 11.6, 10.8, 11.9, 13.0, 12.4, 12.1, 12.8]
+    bars = []
+    start = date(2026, 1, 1)
+    for index, close in enumerate(closes):
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=index),
+                open=close - 0.08,
+                high=close + 0.22,
+                low=close - 0.22,
+                close=close,
+                volume=1000 + index * 20,
                 amount=80_000_000,
             )
         )
