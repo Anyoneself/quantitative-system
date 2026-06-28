@@ -102,6 +102,8 @@ function renderAdvice(payload) {
   document.querySelector("#return-1d").textContent = formatPercent(indicators.return_1d);
   document.querySelector("#return-5d").textContent = formatPercent(indicators.return_5d);
   document.querySelector("#volume-ratio").textContent = indicators.volume_ratio_20d.toFixed(2);
+  document.querySelector("#ma250").textContent = indicators.ma250 > 0 ? formatNumber(indicators.ma250) : "数据不足";
+  document.querySelector("#first-day-high").textContent = indicators.first_day_high > 0 ? formatNumber(indicators.first_day_high) : "不适用";
   document.querySelector("#data-range").textContent =
     `${payload.chart.dates[payload.chart.dates.length - 1]} · ${payload.chart.dates.length} 个交易日`;
 

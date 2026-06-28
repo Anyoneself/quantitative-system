@@ -153,6 +153,35 @@ def generate_advice(
             f"价格下跌 {_format_percent(indicators.return_1d)}，但成交量放大到 5 日均量 "
             f"{indicators.volume_ratio_5d:.2f} 倍，短线卖压上升。"
         )
+    if patterns.first_day_high_breakout_with_volume:
+        score = _clamp_score(score + 8)
+        reasons.append(
+            f"新股样本内放量突破首日高点 {indicators.first_day_high:.2f}，"
+            f"成交量为 5 日均量 {indicators.volume_ratio_5d:.2f} 倍，说明上市初期压力位被资金主动突破。"
+        )
+    if patterns.yearline_breakout_with_volume:
+        score = _clamp_score(score + 10)
+        reasons.append(
+            f"收盘价 {indicators.close:.2f} 放量站上年线 {indicators.ma250:.2f}，"
+            f"且年线从 {indicators.ma250_prev:.2f} 抬升至 {indicators.ma250:.2f}，长期趋势出现修复信号。"
+        )
+    if patterns.yearline_pullback_low_volume:
+        score = _clamp_score(score + 12)
+        reasons.append(
+            f"股价站上年线后缩量回踩，收盘价 {indicators.close:.2f} 距年线 {indicators.ma250:.2f} 较近，"
+            f"成交量只有 5 日均量 {indicators.volume_ratio_5d:.2f} 倍，符合强势股回档观察思路。"
+        )
+    if patterns.ma250_turning_up and not patterns.yearline_breakout_with_volume:
+        score = _clamp_score(score + 4)
+        reasons.append(
+            f"年线从 {indicators.ma250_prev:.2f} 抬升至 {indicators.ma250:.2f}，长期趋势开始向上拐头。"
+        )
+    if indicators.ma250 > 0 and not patterns.close_above_ma250:
+        score = _clamp_score(score - 8)
+        risks.append(
+            f"收盘价 {indicators.close:.2f} 仍低于年线 {indicators.ma250:.2f}，"
+            "长期趋势尚未修复，按强势股回档策略应先等重新站上年线。"
+        )
 
     observations.extend(_build_observations(indicators, patterns))
     action = _map_score_to_action(score)
@@ -198,6 +227,13 @@ def _build_observations(indicators: IndicatorResult, patterns: PatternResult) ->
         observations.append("观察回调时是否继续守住 20 日均线。")
     else:
         observations.append("观察能否重新站上 20 日均线。")
+    if indicators.ma250 > 0:
+        if patterns.close_above_ma250:
+            observations.append("观察回调时是否缩量守住年线，若放量跌回年线下方需要降低权重。")
+        else:
+            observations.append("观察后续能否放量站上年线，年线下方暂不按强势股处理。")
+    elif indicators.first_day_high > 0:
+        observations.append("观察是否能放量突破上市初期首日高点，并在突破后缩量回踩不破。")
     if patterns.limit_up_low_volume:
         observations.append("若次日放量开板并收弱，需要降低该信号权重。")
     else:
@@ -250,6 +286,16 @@ def _build_evidence(indicators: IndicatorResult, patterns: PatternResult) -> lis
         f"当前距离 20 日高点 {_format_percent(_relative_gap(indicators.close, indicators.high_20d_prev))}，"
         f"距离 20 日低点 {_format_percent(_relative_gap(indicators.close, indicators.low_20d_prev))}。",
     ]
+    if indicators.ma250 > 0:
+        evidence.append(
+            f"年线：250 日均线 {indicators.ma250:.2f}，当前相对年线 "
+            f"{_format_percent(_relative_gap(indicators.close, indicators.ma250))}。"
+        )
+    elif indicators.first_day_high > 0:
+        evidence.append(
+            f"新股位置：当前可用日线不足 250 个交易日，首日高点 {indicators.first_day_high:.2f}，"
+            f"当前相对首日高点 {_format_percent(_relative_gap(indicators.close, indicators.first_day_high))}。"
+        )
     if indicators.amount_ma20 > 0:
         evidence.append(f"流动性：20 日平均成交额约 {_format_amount(indicators.amount_ma20)}。")
     if patterns.close_above_ma20 and patterns.ma20_up:

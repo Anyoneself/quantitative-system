@@ -10,7 +10,7 @@ from data.errors import DataRefreshError
 from data.models import PriceVolumeBar, StockInfo
 
 _STOCK_NAME_CACHE: dict[str, str] | None = None
-DEFAULT_KLINE_DAYS = 250
+DEFAULT_KLINE_DAYS = 260
 
 
 def fetch_public_stock_bars(symbol: str, name: str | None = None) -> list[PriceVolumeBar]:

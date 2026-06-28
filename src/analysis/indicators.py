@@ -21,6 +21,9 @@ class IndicatorResult:
     ma10: float
     ma20: float
     ma20_prev: float
+    ma250: float
+    ma250_prev: float
+    first_day_high: float
     high_20d_prev: float
     low_20d_prev: float
     volume: float
@@ -38,17 +41,21 @@ def calculate_indicators(symbol: str, bars: list[PriceVolumeBar]) -> IndicatorRe
     if len(bars) < 21:
         return None
 
-    bars = bars[-21:]
-    current = bars[-1]
-    previous = bars[-2]
+    all_bars = bars
+    bars = all_bars[-21:]
+    current = all_bars[-1]
+    previous = all_bars[-2]
     closes = [bar.close for bar in bars]
     highs = [bar.high for bar in bars]
     lows = [bar.low for bar in bars]
     volumes = [bar.volume for bar in bars]
     amounts = [bar.amount for bar in bars]
+    all_closes = [bar.close for bar in all_bars]
 
     ma20 = _average(closes[-20:])
     ma20_prev = _average(closes[-21:-1])
+    ma250 = _average(all_closes[-250:]) if len(all_closes) >= 250 else 0.0
+    ma250_prev = _average(all_closes[-251:-1]) if len(all_closes) >= 251 else 0.0
     volume_ma5 = _average(volumes[-6:-1])
     volume_ma20 = _average(volumes[-21:-1])
     amount_ma20 = _average(amounts[-21:-1])
@@ -68,6 +75,9 @@ def calculate_indicators(symbol: str, bars: list[PriceVolumeBar]) -> IndicatorRe
         ma10=_average(closes[-10:]),
         ma20=ma20,
         ma20_prev=ma20_prev,
+        ma250=ma250,
+        ma250_prev=ma250_prev,
+        first_day_high=all_bars[0].high if len(all_bars) < 250 else 0.0,
         high_20d_prev=max(highs[-21:-1]),
         low_20d_prev=min(lows[-21:-1]),
         volume=current.volume,

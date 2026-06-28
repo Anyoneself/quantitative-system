@@ -16,6 +16,11 @@ class PatternResult:
     price_down_volume_up: bool
     close_above_ma20: bool
     ma20_up: bool
+    close_above_ma250: bool
+    ma250_turning_up: bool
+    yearline_breakout_with_volume: bool
+    yearline_pullback_low_volume: bool
+    first_day_high_breakout_with_volume: bool
     low_liquidity: bool
     high_20d_return: bool
     volume_drop_below_ma20: bool
@@ -24,6 +29,8 @@ class PatternResult:
 def detect_patterns(indicators: IndicatorResult) -> PatternResult:
     close_above_ma20 = indicators.close > indicators.ma20
     ma20_up = indicators.ma20 > indicators.ma20_prev
+    close_above_ma250 = indicators.ma250 > 0 and indicators.close > indicators.ma250
+    ma250_turning_up = indicators.ma250 > 0 and indicators.ma250_prev > 0 and indicators.ma250 > indicators.ma250_prev
     volume_shrink = indicators.volume_ratio_5d < 0.8
     volume_expand = indicators.volume_ratio_5d > 1.5
     high_20d_return = indicators.return_20d > 0.30
@@ -46,6 +53,25 @@ def detect_patterns(indicators: IndicatorResult) -> PatternResult:
         price_down_volume_up=indicators.return_1d < 0 and volume_expand,
         close_above_ma20=close_above_ma20,
         ma20_up=ma20_up,
+        close_above_ma250=close_above_ma250,
+        ma250_turning_up=ma250_turning_up,
+        yearline_breakout_with_volume=(
+            close_above_ma250
+            and ma250_turning_up
+            and indicators.return_1d > 0
+            and volume_expand
+        ),
+        yearline_pullback_low_volume=(
+            close_above_ma250
+            and indicators.close <= indicators.ma250 * 1.04
+            and -0.05 <= indicators.return_1d < 0
+            and volume_shrink
+        ),
+        first_day_high_breakout_with_volume=(
+            indicators.first_day_high > 0
+            and indicators.close > indicators.first_day_high
+            and volume_expand
+        ),
         low_liquidity=indicators.amount_ma20 > 0 and indicators.amount_ma20 < 50_000_000,
         high_20d_return=high_20d_return,
         volume_drop_below_ma20=(

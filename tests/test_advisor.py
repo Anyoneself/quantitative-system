@@ -78,6 +78,30 @@ class AdvisorTest(unittest.TestCase):
         self.assertTrue(any("缠论结构" in item for item in advice.evidence))
         self.assertIn("缠论结构辅助", format_advice(advice))
 
+    def test_yearline_below_adds_risk_and_score_penalty(self) -> None:
+        bars = _build_yearline_bars(last_close=9.0, last_volume=900)
+
+        indicators = calculate_indicators("600519", bars)
+        self.assertIsNotNone(indicators)
+        patterns = detect_patterns(indicators)
+        advice = build_advice("600519", bars, "knn")
+
+        self.assertFalse(patterns.close_above_ma250)
+        self.assertTrue(any("低于年线" in item for item in advice.risks))
+        self.assertTrue(any("年线" in item for item in advice.evidence))
+
+    def test_yearline_pullback_low_volume_adds_positive_reason(self) -> None:
+        bars = _build_yearline_bars(last_close=10.35, last_volume=500)
+
+        indicators = calculate_indicators("600519", bars)
+        self.assertIsNotNone(indicators)
+        patterns = detect_patterns(indicators)
+        advice = build_advice("600519", bars, "knn")
+
+        self.assertTrue(patterns.yearline_pullback_low_volume)
+        self.assertTrue(any("强势股回档" in item for item in advice.reasons))
+        self.assertIn("年线 MA250", format_advice(advice))
+
     def test_logistic_regression_prediction_returns_probability(self) -> None:
         bars = _build_bars_for_limit_up()
 
@@ -285,6 +309,40 @@ def _build_chan_bars():
                 amount=80_000_000,
             )
         )
+    return bars
+
+
+def _build_yearline_bars(last_close: float, last_volume: float):
+    from datetime import date, timedelta
+
+    bars = []
+    start = date(2025, 1, 1)
+    for index in range(259):
+        close = 10 + index * 0.002
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=index),
+                open=close - 0.04,
+                high=close + 0.08,
+                low=close - 0.08,
+                close=close,
+                volume=1000,
+                amount=80_000_000,
+            )
+        )
+    bars.append(
+        PriceVolumeBar(
+            name="测试股票",
+            trade_date=start + timedelta(days=259),
+            open=last_close + 0.08,
+            high=last_close + 0.12,
+            low=last_close - 0.12,
+            close=last_close,
+            volume=last_volume,
+            amount=80_000_000,
+        )
+    )
     return bars
 
 if __name__ == "__main__":

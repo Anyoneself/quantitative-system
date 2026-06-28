@@ -350,6 +350,10 @@ button:hover .button-light {
   gap: 12px;
 }
 
+.market-strip {
+  grid-template-columns: repeat(6, 1fr);
+}
+
 .market-strip div,
 .scan-summary div,
 .chan-summary div,

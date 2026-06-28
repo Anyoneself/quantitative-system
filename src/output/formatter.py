@@ -72,6 +72,8 @@ def _indicator_lines(indicators) -> list[str]:
         f"- 近 20 交易日涨跌幅：{_format_percent(indicators.return_20d)}",
         f"- 成交量 / 5 日均量：{indicators.volume_ratio_5d:.2f}",
         f"- 成交量 / 20 日均量：{indicators.volume_ratio_20d:.2f}",
+        f"- 年线 MA250：{indicators.ma250:.2f}" if indicators.ma250 > 0 else "- 年线 MA250：数据不足",
+        f"- 首日高点：{indicators.first_day_high:.2f}" if indicators.first_day_high > 0 else "- 首日高点：不适用",
         f"- 是否涨停：{_yes_no(indicators.is_limit_up)}",
         f"- 是否跌停：{_yes_no(indicators.is_limit_down)}",
     ]
