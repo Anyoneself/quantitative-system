@@ -12,6 +12,7 @@ from analysis.market_scanner import MarketScanner
 from analysis.ml_model import predict_next_day_buy_probability
 from analysis.scanner import ScanResult, format_scan_report, scan_top_stocks
 from analysis.service import build_advice
+from analysis.sell_advisor import build_sell_advice
 from analysis.patterns import detect_patterns
 from data.errors import DataRefreshError
 from data.models import PriceVolumeBar, StockInfo
@@ -119,6 +120,49 @@ class AdvisorTest(unittest.TestCase):
 
         self.assertIsNotNone(advice.ml_prediction)
         self.assertEqual(advice.ml_prediction.algorithm, "logistic_regression")
+
+    def test_sell_advice_stop_loss_when_loss_exceeds_limit(self) -> None:
+        bars = _build_yearline_bars(last_close=9.0, last_volume=2000)
+
+        advice = build_sell_advice("600519", bars, cost_price=10.2, max_loss_rate=0.08)
+
+        self.assertEqual(advice.action, "STOP_LOSS")
+        self.assertGreaterEqual(advice.sell_risk_score, 50)
+        self.assertTrue(any("止损" in item for item in advice.risks))
+
+    def test_sell_advice_take_profit_on_high_position_risk(self) -> None:
+        bars = _build_high_position_stagnation_bars()
+
+        advice = build_sell_advice("600519", bars, cost_price=10.0, target_profit_rate=0.2)
+
+        self.assertEqual(advice.action, "TAKE_PROFIT")
+        self.assertIsNotNone(advice.holding_return)
+        self.assertTrue(any("止盈" in item for item in advice.risks))
+
+    def test_sell_advice_reduce_on_technical_break(self) -> None:
+        bars = _build_yearline_bars(last_close=9.8, last_volume=900)
+
+        advice = build_sell_advice("600519", bars, cost_price=9.7)
+
+        self.assertEqual(advice.action, "REDUCE")
+        self.assertTrue(any("低于年线" in item for item in advice.risks))
+
+    def test_sell_advice_hold_when_trend_is_intact(self) -> None:
+        bars = _build_yearline_bars(last_close=10.35, last_volume=500)
+
+        advice = build_sell_advice("600519", bars, cost_price=10.0)
+
+        self.assertEqual(advice.action, "HOLD")
+        self.assertLess(advice.sell_risk_score, 30)
+
+    def test_sell_advice_without_cost_only_returns_technical_risk(self) -> None:
+        bars = _build_yearline_bars(last_close=9.0, last_volume=900)
+
+        advice = build_sell_advice("600519", bars, cost_price=None)
+
+        self.assertEqual(advice.action, "NO_POSITION")
+        self.assertIsNone(advice.holding_return)
+        self.assertTrue(any("未输入持仓成本" in item for item in advice.risks))
 
     def test_scan_top_stocks_sorts_by_score(self) -> None:
         def fake_analyzer(symbol, algorithm):
@@ -340,6 +384,56 @@ def _build_yearline_bars(last_close: float, last_volume: float):
             low=last_close - 0.12,
             close=last_close,
             volume=last_volume,
+            amount=80_000_000,
+        )
+    )
+    return bars
+
+
+def _build_high_position_stagnation_bars():
+    from datetime import date, timedelta
+
+    bars = []
+    start = date(2025, 1, 1)
+    for index in range(240):
+        close = 10 + index * 0.005
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=index),
+                open=close - 0.04,
+                high=close + 0.08,
+                low=close - 0.08,
+                close=close,
+                volume=1000,
+                amount=80_000_000,
+            )
+        )
+    base = bars[-1].close
+    for index in range(19):
+        close = base * (1.02 + index * 0.018)
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=240 + index),
+                open=close - 0.05,
+                high=close + 0.1,
+                low=close - 0.1,
+                close=close,
+                volume=1000,
+                amount=80_000_000,
+            )
+        )
+    last_close = bars[-1].close * 1.005
+    bars.append(
+        PriceVolumeBar(
+            name="测试股票",
+            trade_date=start + timedelta(days=259),
+            open=last_close - 0.02,
+            high=last_close + 0.08,
+            low=last_close - 0.08,
+            close=last_close,
+            volume=2500,
             amount=80_000_000,
         )
     )

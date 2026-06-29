@@ -4,12 +4,19 @@ import json
 from dataclasses import asdict
 
 from analysis.advisor import Advice
+from analysis.sell_advisor import SellAdvice
 
 
 def format_advice(advice: Advice, output_format: str = "text") -> str:
     if output_format == "json":
         return json.dumps(_advice_to_dict(advice), ensure_ascii=False, indent=2)
     return _format_text(advice)
+
+
+def format_sell_advice(advice: SellAdvice, output_format: str = "text") -> str:
+    if output_format == "json":
+        return json.dumps(asdict(advice), ensure_ascii=False, indent=2)
+    return _format_sell_text(advice)
 
 
 def _format_text(advice: Advice) -> str:
@@ -56,6 +63,48 @@ def _format_text(advice: Advice) -> str:
 
     lines.append("")
     lines.append("后续观察：")
+    lines.extend(_numbered_lines(advice.observations))
+    return "\n".join(lines)
+
+
+def _format_sell_text(advice: SellAdvice) -> str:
+    lines: list[str] = []
+    indicators = advice.indicators
+    if indicators:
+        lines.extend(
+            [
+                f"股票代码：{indicators.symbol}",
+                f"股票名称：{indicators.name or '未知'}",
+                f"数据截止日：{indicators.data_end_date}",
+                f"当前收盘价：{indicators.close:.2f}",
+                f"卖出建议：{advice.action}",
+                f"卖出风险评分：{advice.sell_risk_score}",
+            ]
+        )
+        if advice.holding_return is not None:
+            lines.append(f"持仓收益率：{_format_percent(advice.holding_return)}")
+    else:
+        lines.extend([f"卖出建议：{advice.action}", f"卖出风险评分：{advice.sell_risk_score}"])
+
+    if advice.key_levels:
+        lines.extend(["", "关键位："])
+        if advice.key_levels.cost_price is not None:
+            lines.append(f"- 持仓成本：{advice.key_levels.cost_price:.2f}")
+        lines.extend(
+            [
+                f"- 当前收盘价：{advice.key_levels.close:.2f}",
+                f"- 20 日均线：{advice.key_levels.ma20:.2f}",
+                f"- 年线 MA250：{advice.key_levels.ma250:.2f}" if advice.key_levels.ma250 > 0 else "- 年线 MA250：数据不足",
+                f"- 中枢下沿：{advice.key_levels.chan_center_lower:.2f}" if advice.key_levels.chan_center_lower is not None else "- 中枢下沿：未形成",
+                f"- 近 20 日最高收盘价：{advice.key_levels.recent_high_close:.2f}",
+            ]
+        )
+
+    lines.extend(["", "卖出理由："])
+    lines.extend(_numbered_lines(advice.reasons))
+    lines.extend(["", "风险提示："])
+    lines.extend(_numbered_lines(advice.risks))
+    lines.extend(["", "后续观察："])
     lines.extend(_numbered_lines(advice.observations))
     return "\n".join(lines)
 

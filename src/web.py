@@ -10,7 +10,7 @@ from pathlib import Path
 from analysis.ml_model import ALGORITHMS
 from analysis.market_scanner import MARKET_SCANNER
 from analysis.scanner import parse_symbols, scan_top_stocks
-from analysis.service import build_advice
+from analysis.service import analyze_stock_sell, build_advice
 from data.errors import DataRefreshError
 from data.source import fetch_bars
 from output.formatter import advice_to_dict
@@ -73,6 +73,9 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
         if self.path == "/api/advise":
             self._handle_advise()
             return
+        if self.path == "/api/sell-advice":
+            self._handle_sell_advice()
+            return
         if self.path == "/api/scan":
             self._handle_scan()
             return
@@ -118,6 +121,24 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
                     "beginner": _beginner_payload(advice),
                 }
             )
+        except DataRefreshError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=502)
+        except json.JSONDecodeError:
+            self._send_json({"ok": False, "error": "请求不是有效 JSON。"}, status=400)
+
+    def _handle_sell_advice(self) -> None:
+        try:
+            payload = self._read_json()
+            symbol = _normalize_symbol(str(payload.get("symbol", "")))
+            if not symbol:
+                self._send_json({"ok": False, "error": "股票代码必须是 6 位数字。"}, status=400)
+                return
+            cost_price = _parse_optional_float(payload.get("cost_price"))
+            quantity = _parse_optional_float(payload.get("quantity"))
+            max_loss_rate = _parse_float(payload.get("max_loss_rate"), 0.08)
+            target_profit_rate = _parse_float(payload.get("target_profit_rate"), 0.20)
+            sell_advice = analyze_stock_sell(symbol, cost_price, quantity, max_loss_rate, target_profit_rate)
+            self._send_json({"ok": True, "sell_advice": asdict(sell_advice)})
         except DataRefreshError as exc:
             self._send_json({"ok": False, "error": str(exc)}, status=502)
         except json.JSONDecodeError:
@@ -229,6 +250,22 @@ def _parse_int(value, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _parse_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_optional_float(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _chart_payload(bars) -> dict:

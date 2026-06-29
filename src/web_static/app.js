@@ -2,6 +2,10 @@ const form = document.querySelector("#advisor-form");
 const scanForm = document.querySelector("#scan-form");
 const symbolInput = document.querySelector("#symbol");
 const algorithmInput = document.querySelector("#algorithm");
+const costPriceInput = document.querySelector("#cost-price");
+const quantityInput = document.querySelector("#quantity");
+const maxLossRateInput = document.querySelector("#max-loss-rate");
+const targetProfitRateInput = document.querySelector("#target-profit-rate");
 const scanAlgorithmInput = document.querySelector("#scan-algorithm");
 const button = document.querySelector("#submit-button");
 const scanAutoButton = document.querySelector("#scan-auto-button");
@@ -44,6 +48,7 @@ form.addEventListener("submit", async (event) => {
       throw new Error(payload.error || "分析失败");
     }
     renderAdvice(payload);
+    await loadSellAdvice();
     setState("result");
   } catch (error) {
     errorState.textContent = error.message;
@@ -78,6 +83,65 @@ function setMode(mode) {
   setState("empty");
 }
 
+async function loadSellAdvice() {
+  const response = await fetch("/api/sell-advice", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      symbol: symbolInput.value.trim(),
+      cost_price: parseOptionalNumber(costPriceInput.value),
+      quantity: parseOptionalNumber(quantityInput.value),
+      max_loss_rate: parseOptionalNumber(maxLossRateInput.value) || 0.08,
+      target_profit_rate: parseOptionalNumber(targetProfitRateInput.value) || 0.20,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "卖出判断失败");
+  }
+  renderSellAdvice(payload.sell_advice);
+}
+
+function renderSellAdvice(sellAdvice) {
+  document.querySelector("#sell-score").textContent = sellAdvice.sell_risk_score;
+  document.querySelector("#sell-action-label").textContent = sellActionText(sellAdvice.action);
+  const detail = document.querySelector("#sell-detail");
+  detail.innerHTML = "";
+  const rows = [
+    ["卖出建议", sellActionText(sellAdvice.action)],
+    ["卖出风险评分", String(sellAdvice.sell_risk_score)],
+  ];
+  if (sellAdvice.holding_return !== null && sellAdvice.holding_return !== undefined) {
+    rows.push(["持仓收益率", formatPercent(sellAdvice.holding_return)]);
+  }
+  if (sellAdvice.key_levels) {
+    rows.push(["20 日均线", formatNumber(sellAdvice.key_levels.ma20)]);
+    rows.push(["年线 MA250", sellAdvice.key_levels.ma250 > 0 ? formatNumber(sellAdvice.key_levels.ma250) : "数据不足"]);
+    rows.push(["中枢下沿", sellAdvice.key_levels.chan_center_lower !== null ? formatNumber(sellAdvice.key_levels.chan_center_lower) : "未形成"]);
+  }
+  rows.forEach(([label, value]) => {
+    const row = document.createElement("div");
+    const labelNode = document.createElement("span");
+    const valueNode = document.createElement("strong");
+    labelNode.textContent = label;
+    valueNode.textContent = value;
+    row.append(labelNode, valueNode);
+    detail.appendChild(row);
+  });
+  renderList("#sell-risks", [...(sellAdvice.reasons || []), ...(sellAdvice.risks || []), ...(sellAdvice.observations || [])]);
+}
+
+function sellActionText(action) {
+  const actionMap = {
+    HOLD: "继续持有",
+    REDUCE: "减仓观察",
+    TAKE_PROFIT: "止盈/分批减仓",
+    STOP_LOSS: "止损",
+    NO_POSITION: "仅技术风险提示",
+  };
+  return actionMap[action] || action;
+}
+
 function setState(state) {
   emptyState.classList.toggle("hidden", state !== "empty");
   loadingState.classList.toggle("hidden", state !== "loading");
@@ -98,6 +162,7 @@ function renderAdvice(payload) {
   document.querySelector("#headline").textContent =
     `${actionText[advice.action] || advice.action}：${beginner.headline}`;
   document.querySelector("#score").textContent = advice.score;
+  document.querySelector("#buy-action-label").textContent = actionText[advice.action] || advice.action;
   document.querySelector("#close-price").textContent = formatNumber(indicators.close);
   document.querySelector("#return-1d").textContent = formatPercent(indicators.return_1d);
   document.querySelector("#return-5d").textContent = formatPercent(indicators.return_5d);
@@ -111,7 +176,6 @@ function renderAdvice(payload) {
   renderList("#evidence", advice.evidence || []);
   renderList("#risks", advice.risks);
   renderList("#observations", advice.observations);
-  renderList("#beginner", [...beginner.plain_language, ...beginner.next_steps]);
   renderMl(prediction);
   renderChan(chan);
   drawStockChart(payload.chart, chan);
@@ -445,6 +509,13 @@ function formatNumber(value) {
 
 function formatPercent(value) {
   return `${(Number(value) * 100).toFixed(2)}%`;
+}
+
+function parseOptionalNumber(value) {
+  const cleaned = String(value || "").trim();
+  if (!cleaned) return null;
+  const number = Number(cleaned);
+  return Number.isFinite(number) ? number : null;
 }
 
 drawAmbientChart();

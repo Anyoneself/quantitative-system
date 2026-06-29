@@ -36,6 +36,7 @@ Quantitative-System 是一个面向 A 股单股分析和全市场扫描的量化
 - Web 单股分析展示 90 个交易日价格结构图，标注缠论分型点、笔和最近中枢。
 - 输出缠论结构状态、当前位置、买点候选、风险结构和结构辅助建议，并将结构调整分纳入最终评分。
 - 接入强势股回档策略：年线 MA250、放量突破年线、缩量回踩年线、年线向上拐头、新股放量突破首日高点会参与综合评分。
+- 支持输入持仓成本价，输出单股持仓卖出判断、卖出风险评分、止盈/止损/减仓/继续持有建议。
 - 输出买入、观察、持有或回避建议。
 - 输出核心理由、风险提示、关键指标和新手解读。
 - 提供 CLI 和本地 Web 前端。
@@ -58,6 +59,7 @@ Quantitative-System 是一个面向 A 股单股分析和全市场扫描的量化
 - 关键量价指标。
 - 缠论结构辅助，包括分型、笔、中枢、买点候选、风险结构和结构建议。
 - 年线和强势回档信号，包括是否站上年线、年线是否向上、是否缩量回踩年线。
+- 持仓卖出判断，包括持仓收益率、卖出风险评分、关键支撑位和卖出风险说明。
 - 新手友好的后续观察点。
 
 ## 本地运行
@@ -78,6 +80,18 @@ PYTHONPATH=src python3 -m cli advise 600519 --algorithm weighted_knn
 
 ```bash
 PYTHONPATH=src python3 -m cli advise 600519 --format json
+```
+
+分析单只股票的持仓卖出风险：
+
+```bash
+PYTHONPATH=src python3 -m cli sell 601988 --cost-price 5.20
+```
+
+卖出判断支持可选参数：
+
+```bash
+PYTHONPATH=src python3 -m cli sell 601988 --cost-price 5.20 --quantity 1000 --max-loss-rate 0.08 --target-profit-rate 0.20 --format json
 ```
 
 CLI 扫描自定义股票池并输出 Top 10：
@@ -117,7 +131,7 @@ PYTHONPATH=src python3 -m cli scan --pool-file config/stock_pool.example.txt --m
 启动前端界面：
 
 ```bash
-PYTHONPATH=src python3 -m web --port 8000
+PYTHONPATH=src python3 -m web --port 0
 ```
 
 如果 `8000` 已被占用，服务会自动尝试 `8001` 到 `8010`。也可以让系统自动选择空闲端口：
@@ -135,8 +149,10 @@ http://127.0.0.1:8000
 前端支持：
 
 - 输入股票代码。
+- 可选输入持仓成本价、持仓数量、最大亏损比例和目标止盈比例。
 - 选择机器学习算法。
 - 查看价格结构图、预测概率、缠论结构辅助、建议和新手解读。
+- 查看持仓卖出判断，包括卖出建议、卖出风险评分、持仓收益率和关键位。
 - 抓取公开行情接口对应的全 A 股票列表。
 - Web 全 A 扫描会剔除创业板、科创板和北交所股票，也就是 `300`、`301`、`688`、`689`、`4`、`8`、`9` 开头代码。
 - 每轮全 A 扫描完成后停止，下一轮筛选需要手动重新启动。
@@ -380,6 +396,7 @@ src/
 │   ├── indicators.py       # 量价指标
 │   ├── patterns.py         # 量价形态
 │   ├── chan_theory.py      # 缠论分型、笔、中枢和结构建议
+│   ├── sell_advisor.py     # 持仓卖出风险和止盈止损建议
 │   ├── ml_model.py         # 机器学习预测
 │   ├── scanner.py          # CLI 股票池定时扫描
 │   ├── market_scanner.py   # Web 全 A 动态扫描
@@ -401,8 +418,9 @@ src/
 
 - 增加更多量价特征。
 - 当前指标说明见 [股票指标总览](doc/stock_indicators.md)。
+- 单股卖出判断说明见 [单股卖出判断设计](doc/sell_decision_design.md)。
 - 完善缠论结构分析，小白说明见 [缠论小白说明](doc/chan_theory_for_beginners.md)，系统设计见 [缠论在系统中的使用设计](doc/chan_theory_usage.md)。
 - 增加市场环境过滤。
 - 增加回测模块，验证模型历史表现。
-- 增加持仓成本输入，区分未持有和已持有场景。
+- 完善持仓卖出判断的回测和参数校准。
 - 增加更完整的风险等级说明。

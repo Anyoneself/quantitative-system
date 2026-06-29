@@ -5,6 +5,7 @@ from analysis.chan_theory import analyze_chan_structure
 from analysis.indicators import calculate_indicators
 from analysis.ml_model import predict_next_day_buy_probability
 from analysis.patterns import detect_patterns
+from analysis.sell_advisor import SellAdvice, build_sell_advice
 from data.errors import DataRefreshError
 from data.models import PriceVolumeBar
 from data.source import fetch_bars
@@ -31,3 +32,18 @@ def build_advice(symbol: str, bars: list[PriceVolumeBar], algorithm: str) -> Adv
     ml_prediction = predict_next_day_buy_probability(bars, algorithm)
     chan_structure = analyze_chan_structure(bars[-90:])
     return generate_advice(indicators, patterns, ml_prediction, chan_structure)
+
+
+def analyze_stock_sell(
+    symbol: str,
+    cost_price: float | None,
+    quantity: float | None = None,
+    max_loss_rate: float = 0.08,
+    target_profit_rate: float = 0.20,
+    name: str | None = None,
+) -> SellAdvice:
+    try:
+        bars = fetch_bars(symbol, name)
+    except DataRefreshError as exc:
+        return build_sell_advice(symbol, [], cost_price, quantity, max_loss_rate, target_profit_rate)
+    return build_sell_advice(symbol, bars, cost_price, quantity, max_loss_rate, target_profit_rate)

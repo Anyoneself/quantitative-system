@@ -38,6 +38,26 @@
                   <option value="logistic_regression">逻辑回归</option>
                 </select>
               </label>
+
+              <label>
+                <span>持仓成本价（可选，用于卖出判断）</span>
+                <input id="cost-price" inputmode="decimal" placeholder="5.20" />
+              </label>
+
+              <label>
+                <span>持仓数量（可选）</span>
+                <input id="quantity" inputmode="decimal" placeholder="1000" />
+              </label>
+
+              <label>
+                <span>最大亏损比例</span>
+                <input id="max-loss-rate" inputmode="decimal" value="0.08" />
+              </label>
+
+              <label>
+                <span>目标止盈比例</span>
+                <input id="target-profit-rate" inputmode="decimal" value="0.20" />
+              </label>
             </div>
 
             <button id="submit-button" type="submit">
@@ -152,9 +172,17 @@
                 <p class="eyebrow" id="stock-meta">--</p>
                 <h2 id="headline">--</h2>
               </div>
-              <div class="score-card">
-                <span>综合评分</span>
-                <strong id="score">--</strong>
+              <div class="score-pair">
+                <div class="score-card buy-score-card">
+                  <span>适合买入评分</span>
+                  <strong id="score">--</strong>
+                  <small id="buy-action-label">--</small>
+                </div>
+                <div class="score-card sell-score-card">
+                  <span>适合卖出评分</span>
+                  <strong id="sell-score">--</strong>
+                  <small id="sell-action-label">--</small>
+                </div>
               </div>
             </header>
 
@@ -224,7 +252,7 @@
 
             <section class="detail-grid">
               <div class="detail-card">
-                <h3>核心理由</h3>
+                <h3>买入依据</h3>
                 <ol id="reasons"></ol>
               </div>
               <div class="detail-card">
@@ -235,13 +263,14 @@
                 <h3>风险提示</h3>
                 <ol id="risks"></ol>
               </div>
+              <div class="detail-card sell-card">
+                <h3>卖出依据</h3>
+                <div id="sell-detail" class="metric-list"></div>
+                <ol id="sell-risks"></ol>
+              </div>
               <div class="detail-card">
                 <h3>机器学习预测</h3>
                 <div id="ml-detail" class="metric-list"></div>
-              </div>
-              <div class="detail-card">
-                <h3>小白解读</h3>
-                <ol id="beginner"></ol>
               </div>
               <div class="detail-card wide">
                 <h3>下一步观察</h3>
@@ -253,6 +282,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=20260628-yearline"></script>
+    <script src="/app.js?v=20260629-no-beginner"></script>
   </body>
 </html>

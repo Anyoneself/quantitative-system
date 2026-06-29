@@ -337,9 +337,26 @@ button:hover .button-light {
   padding: 16px;
 }
 
+.score-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 12px;
+  min-width: 336px;
+}
+
 .score-card strong {
   font-size: 44px;
   color: var(--gold);
+}
+
+.score-card small {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: -8px;
+}
+
+.sell-score-card strong {
+  color: var(--steel);
 }
 
 .market-strip,
@@ -453,6 +470,10 @@ button:hover .button-light {
   border-color: rgba(255, 125, 125, 0.24);
 }
 
+.sell-card {
+  border-color: rgba(139, 183, 201, 0.28);
+}
+
 .metric-list {
   display: grid;
   gap: 10px;
@@ -550,5 +571,10 @@ button:hover .button-light {
 
   .advice-header {
     display: grid;
+  }
+
+  .score-pair {
+    grid-template-columns: 1fr;
+    min-width: 0;
   }
 }
