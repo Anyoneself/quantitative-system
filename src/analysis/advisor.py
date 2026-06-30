@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from analysis.chan_theory import ChanStructureResult
+from analysis.divergence import DivergenceResult
+from analysis.fund_flow import FundFlowResult
 from analysis.indicators import IndicatorResult
 from analysis.ml_model import MlPrediction
 from analysis.patterns import PatternResult
@@ -20,6 +22,8 @@ class Advice:
     patterns: PatternResult | None
     ml_prediction: MlPrediction | None
     chan_structure: ChanStructureResult | None = None
+    fund_flow: FundFlowResult | None = None
+    divergence: DivergenceResult | None = None
 
 
 def make_no_data_advice(message: str) -> Advice:
@@ -41,6 +45,8 @@ def generate_advice(
     patterns: PatternResult,
     ml_prediction: MlPrediction | None,
     chan_structure: ChanStructureResult | None = None,
+    fund_flow: FundFlowResult | None = None,
+    divergence: DivergenceResult | None = None,
 ) -> Advice:
     score = 0
     reasons: list[str] = []
@@ -50,23 +56,24 @@ def generate_advice(
 
     if ml_prediction:
         score = round(ml_prediction.buy_probability * 100)
+        horizon_text = _horizon_text(ml_prediction.horizon_days)
         reasons.append(
-            f"{ml_prediction.algorithm_name}模型基于历史量价数据，给出的历史相似上涨占比为 "
+            f"{ml_prediction.algorithm_name}模型基于历史量价数据，给出的{horizon_text}历史达标占比为 "
             f"{ml_prediction.buy_probability * 100:.2f}%。"
         )
         if ml_prediction.neighbor_count > 0:
             evidence.append(
                 f"模型训练样本 {ml_prediction.sample_count} 个，最近邻样本 "
-                f"{ml_prediction.neighbor_count} 个，其中次日上涨样本 {ml_prediction.positive_count} 个，"
-                f"相似样本上涨占比 {_format_percent(ml_prediction.buy_probability)}。"
+                f"{ml_prediction.neighbor_count} 个，其中{horizon_text}达标样本 {ml_prediction.positive_count} 个，"
+                f"相似样本达标占比 {_format_percent(ml_prediction.buy_probability)}。"
             )
         else:
             evidence.append(
-                f"模型训练样本 {ml_prediction.sample_count} 个，用历史涨跌结果拟合当前量价特征，"
+                f"模型训练样本 {ml_prediction.sample_count} 个，用{horizon_text}历史结果拟合当前量价特征，"
                 f"输出上涨概率 {_format_percent(ml_prediction.buy_probability)}。"
             )
         if ml_prediction.buy_probability < 0.45:
-            risks.append("机器学习模型历史相似上涨占比低于 45%，下一个交易日不建议买进。")
+            risks.append(f"机器学习模型{horizon_text}历史达标占比低于 45%，当前不建议买进。")
         elif ml_prediction.buy_probability < 0.60:
             observations.append("机器学习模型尚未给出高置信买入信号，建议等待更强确认。")
         else:
@@ -87,6 +94,30 @@ def generate_advice(
             risks.append(chan_structure.recommendation)
         else:
             observations.append(chan_structure.recommendation)
+
+    if fund_flow:
+        score = _clamp_score(score + fund_flow.fund_flow_score_adjustment)
+        evidence.append(f"资金流向：{fund_flow.explanation}")
+        if fund_flow.fund_flow_score_adjustment > 0:
+            reasons.append(f"资金流向确认偏正面：{fund_flow.explanation}")
+        elif fund_flow.fund_flow_score_adjustment < 0:
+            risks.append(f"资金流向偏负面：{fund_flow.explanation}")
+        else:
+            observations.append(f"资金流向分歧：{fund_flow.explanation}")
+
+    if divergence:
+        score = _clamp_score(score + divergence.bullish_score_adjustment)
+        evidence.append(f"背驰信号：{divergence.signal}，置信度 {divergence.confidence}，依据：{'；'.join(divergence.reasons)}")
+        if divergence.bullish_divergence:
+            reasons.append(
+                f"出现{divergence.signal}，买入评分调整 {divergence.bullish_score_adjustment:+d}，"
+                "说明下跌动能可能衰竭，可进入买入观察。"
+            )
+        if divergence.bearish_divergence:
+            risks.append(
+                f"出现{divergence.signal}，卖出风险调整 {divergence.bearish_risk_adjustment:+d}，"
+                "上涨动能可能衰减，追高风险上升。"
+            )
 
     evidence.extend(_build_evidence(indicators, patterns))
 
@@ -124,6 +155,36 @@ def generate_advice(
         reasons.append(
             f"当日回调 {_format_percent(indicators.return_1d)}，但成交量只有 5 日均量 "
             f"{indicators.volume_ratio_5d:.2f} 倍，且仍在 20 日均线上方，抛压相对可控。"
+        )
+    if patterns.macd_golden_cross_above_zero:
+        score = _clamp_score(score + 6)
+        reasons.append("MACD 在零轴上方形成金叉，趋势动能偏强，买入观察分提高。")
+    elif patterns.macd_golden_cross:
+        score = _clamp_score(score + 3)
+        reasons.append("MACD 形成金叉，短线动能有修复迹象，但仍需结合价格位置和资金流确认。")
+    if patterns.macd_histogram_expanding:
+        score = _clamp_score(score + 3)
+        reasons.append("MACD 柱体为正且继续扩大，动能正在增强。")
+    if patterns.macd_dead_cross:
+        score = _clamp_score(score - 6)
+        risks.append("MACD 形成死叉，短线动能转弱，降低买入评分。")
+    elif patterns.macd_histogram_shrinking:
+        score = _clamp_score(score - 3)
+        risks.append("MACD 柱体走弱，动能边际下降，需要等待进一步确认。")
+    if patterns.doji_reversal:
+        score = _clamp_score(score + 4)
+        reasons.append(
+            "低位附近出现十字星形态，说明短线多空分歧加大，可能进入止跌观察区。"
+        )
+    if patterns.long_lower_shadow:
+        score = _clamp_score(score + 4)
+        reasons.append(
+            "当日 K 线出现较长下影线，盘中下探后有资金承接，短线抛压有缓和迹象。"
+        )
+    if patterns.low_position_rebound:
+        score = _clamp_score(score + 6)
+        reasons.append(
+            f"价格接近 20 日低点 {indicators.low_20d_prev:.2f} 后出现止跌反弹信号，可进入反弹观察。"
         )
     if indicators.return_1d > 0 and indicators.volume_ratio_5d > 1:
         reasons.append(
@@ -202,6 +263,8 @@ def generate_advice(
         patterns=patterns,
         ml_prediction=ml_prediction,
         chan_structure=chan_structure,
+        fund_flow=fund_flow,
+        divergence=divergence,
     )
 
 
@@ -217,6 +280,12 @@ def _map_score_to_action(score: int) -> str:
 
 def _clamp_score(score: int) -> int:
     return max(0, min(100, score))
+
+
+def _horizon_text(horizon_days: int) -> str:
+    if horizon_days <= 1:
+        return "次日"
+    return f"未来 {horizon_days} 日"
 
 
 def _build_observations(indicators: IndicatorResult, patterns: PatternResult) -> list[str]:
@@ -236,6 +305,8 @@ def _build_observations(indicators: IndicatorResult, patterns: PatternResult) ->
         observations.append("观察是否能放量突破上市初期首日高点，并在突破后缩量回踩不破。")
     if patterns.limit_up_low_volume:
         observations.append("若次日放量开板并收弱，需要降低该信号权重。")
+    elif patterns.low_position_rebound:
+        observations.append("观察反弹信号后能否放量站回 5 日均线或 20 日均线，若继续缩量横盘则只作弱反弹处理。")
     else:
         observations.append("观察成交量是否在上涨时放大、回调时收缩。")
     return observations
@@ -252,22 +323,22 @@ def _build_action_summary(
         probability_text = _format_percent(ml_prediction.buy_probability)
     if action == "BUY":
         return (
-            f"结论：可以列入买入观察。评分 {score}，历史相似上涨占比 {probability_text}；"
+            f"结论：可以列入买入观察。评分 {score}，历史达标占比 {probability_text}；"
             f"当前收盘价相对 20 日均线 {_format_percent(_relative_gap(indicators.close, indicators.ma20))}，"
             f"成交量为 20 日均量 {indicators.volume_ratio_20d:.2f} 倍。"
         )
     if action == "WATCH":
         return (
-            f"结论：继续观察，暂不适合无脑追买。评分 {score}，历史相似上涨占比 {probability_text}；"
+            f"结论：继续观察，暂不适合无脑追买。评分 {score}，历史达标占比 {probability_text}；"
             f"需要确认价格能否站稳 20 日均线和成交量是否继续配合。"
         )
     if action == "HOLD":
         return (
-            f"结论：信号中性。评分 {score}，历史相似上涨占比 {probability_text}；"
+            f"结论：信号中性。评分 {score}，历史达标占比 {probability_text}；"
             "当前证据不足以支持新手直接买入。"
         )
     return (
-        f"结论：暂不建议买进。评分 {score}，历史相似上涨占比 {probability_text}；"
+        f"结论：暂不建议买进。评分 {score}，历史达标占比 {probability_text}；"
         "当前模型或量价结构没有给出足够强的买入证据。"
     )
 
@@ -277,6 +348,8 @@ def _build_evidence(indicators: IndicatorResult, patterns: PatternResult) -> lis
         f"价格趋势：收盘价 {indicators.close:.2f}，5 日均线 {indicators.ma5:.2f}，"
         f"20 日均线 {indicators.ma20:.2f}，相对 20 日均线 "
         f"{_format_percent(_relative_gap(indicators.close, indicators.ma20))}。",
+        f"K 线结构：开盘 {indicators.open:.2f}，最高 {indicators.high:.2f}，最低 {indicators.low:.2f}，收盘 {indicators.close:.2f}。",
+        f"MACD：DIF {indicators.macd_dif:.4f}，DEA {indicators.macd_dea:.4f}，MACD 柱 {indicators.macd_histogram:.4f}。",
         f"涨跌幅：1 日 {_format_percent(indicators.return_1d)}，5 日 "
         f"{_format_percent(indicators.return_5d)}，20 日 {_format_percent(indicators.return_20d)}。",
         f"量能：当日成交量 {indicators.volume:.0f}，5 日均量 {indicators.volume_ma5:.0f}，"

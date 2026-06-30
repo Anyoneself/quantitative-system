@@ -20,3 +20,14 @@ class PriceVolumeBar:
     close: float
     volume: float
     amount: float
+
+
+@dataclass(frozen=True)
+class FundFlowBar:
+    trade_date: date
+    main_net_inflow: float
+    super_large_net_inflow: float
+    large_net_inflow: float
+    medium_net_inflow: float
+    small_net_inflow: float
+    main_net_inflow_ratio: float

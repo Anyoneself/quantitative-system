@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from analysis.chan_theory import analyze_chan_structure
 from analysis.advisor import generate_advice
+from analysis.divergence import analyze_divergence
+from analysis.fund_flow import analyze_fund_flow
 from analysis.indicators import calculate_indicators
 from analysis.market_scanner import MarketScanner
 from analysis.ml_model import predict_next_day_buy_probability
@@ -15,7 +17,7 @@ from analysis.service import build_advice
 from analysis.sell_advisor import build_sell_advice
 from analysis.patterns import detect_patterns
 from data.errors import DataRefreshError
-from data.models import PriceVolumeBar, StockInfo
+from data.models import FundFlowBar, PriceVolumeBar, StockInfo
 from output.formatter import format_advice
 
 
@@ -103,6 +105,76 @@ class AdvisorTest(unittest.TestCase):
         self.assertTrue(any("强势股回档" in item for item in advice.reasons))
         self.assertIn("年线 MA250", format_advice(advice))
 
+    def test_low_position_rebound_signal_adds_buy_reason(self) -> None:
+        bars = _build_rebound_bars()
+
+        indicators = calculate_indicators("600519", bars)
+        self.assertIsNotNone(indicators)
+        patterns = detect_patterns(indicators)
+        prediction = predict_next_day_buy_probability(bars, "knn")
+        advice = generate_advice(indicators, patterns, prediction)
+
+        self.assertTrue(patterns.long_lower_shadow)
+        self.assertTrue(patterns.low_position_rebound)
+        self.assertTrue(any("止跌反弹" in item or "下影线" in item for item in advice.reasons))
+
+    def test_low_position_rebound_reduces_sell_risk(self) -> None:
+        bars = _build_rebound_bars()
+
+        advice = build_sell_advice("600519", bars, cost_price=10.5)
+
+        self.assertTrue(any("止跌反弹" in item for item in advice.reasons))
+
+    def test_macd_golden_cross_adds_buy_reason(self) -> None:
+        bars = _build_macd_cross_bars(golden=True)
+
+        indicators = calculate_indicators("600519", bars)
+        self.assertIsNotNone(indicators)
+        patterns = detect_patterns(indicators)
+        prediction = predict_next_day_buy_probability(bars, "knn")
+        advice = generate_advice(indicators, patterns, prediction)
+
+        self.assertTrue(patterns.macd_golden_cross)
+        self.assertTrue(any("MACD" in item and "金叉" in item for item in advice.reasons))
+
+    def test_macd_dead_cross_adds_sell_risk(self) -> None:
+        bars = _build_macd_cross_bars(golden=False)
+
+        indicators = calculate_indicators("600519", bars)
+        self.assertIsNotNone(indicators)
+        patterns = detect_patterns(indicators)
+        sell_advice = build_sell_advice("600519", bars, cost_price=10.0)
+
+        self.assertTrue(patterns.macd_dead_cross)
+        self.assertTrue(any("MACD" in item and "死叉" in item for item in sell_advice.risks))
+
+    def test_bullish_divergence_supports_buy_score(self) -> None:
+        bars = _build_divergence_bars(bullish=True)
+
+        divergence = analyze_divergence(bars)
+        self.assertIsNotNone(divergence)
+
+        self.assertTrue(divergence.bullish_divergence)
+        self.assertGreater(divergence.bullish_score_adjustment, 0)
+
+    def test_bearish_divergence_supports_sell_risk(self) -> None:
+        bars = _build_divergence_bars(bullish=False)
+
+        divergence = analyze_divergence(bars)
+        self.assertIsNotNone(divergence)
+
+        self.assertTrue(divergence.bearish_divergence)
+        self.assertGreater(divergence.bearish_risk_adjustment, 0)
+
+    def test_no_clear_divergence_returns_neutral_signal(self) -> None:
+        bars = _build_no_divergence_bars()
+
+        divergence = analyze_divergence(bars)
+        self.assertIsNotNone(divergence)
+
+        self.assertFalse(divergence.bullish_divergence)
+        self.assertFalse(divergence.bearish_divergence)
+
     def test_logistic_regression_prediction_returns_probability(self) -> None:
         bars = _build_bars_for_limit_up()
 
@@ -113,6 +185,27 @@ class AdvisorTest(unittest.TestCase):
         self.assertGreaterEqual(prediction.buy_probability, 0)
         self.assertLessEqual(prediction.buy_probability, 1)
 
+    def test_robust_ensemble_uses_five_day_horizon(self) -> None:
+        bars = _build_bars(260)
+
+        prediction = predict_next_day_buy_probability(bars, "robust_ensemble")
+
+        self.assertIsNotNone(prediction)
+        self.assertEqual(prediction.algorithm, "robust_ensemble")
+        self.assertEqual(prediction.horizon_days, 5)
+        self.assertGreaterEqual(prediction.buy_probability, 0)
+        self.assertLessEqual(prediction.buy_probability, 1)
+
+    def test_time_decay_knn_uses_five_day_horizon(self) -> None:
+        bars = _build_bars(260)
+
+        prediction = predict_next_day_buy_probability(bars, "time_decay_knn")
+
+        self.assertIsNotNone(prediction)
+        self.assertEqual(prediction.algorithm, "time_decay_knn")
+        self.assertEqual(prediction.horizon_days, 5)
+        self.assertGreater(prediction.neighbor_count, 0)
+
     def test_build_advice_accepts_algorithm(self) -> None:
         bars = _build_bars_for_limit_up()
 
@@ -120,6 +213,31 @@ class AdvisorTest(unittest.TestCase):
 
         self.assertIsNotNone(advice.ml_prediction)
         self.assertEqual(advice.ml_prediction.algorithm, "logistic_regression")
+
+    def test_fund_flow_positive_adjusts_buy_score(self) -> None:
+        bars = _build_bars_for_limit_up()
+        indicators = calculate_indicators("600519", bars)
+        self.assertIsNotNone(indicators)
+        patterns = detect_patterns(indicators)
+        prediction = predict_next_day_buy_probability(bars)
+        fund_flow = analyze_fund_flow(_build_fund_flow_bars(positive=True))
+
+        advice = generate_advice(indicators, patterns, prediction, fund_flow=fund_flow)
+
+        self.assertIsNotNone(advice.fund_flow)
+        self.assertGreater(advice.fund_flow.fund_flow_score_adjustment, 0)
+        self.assertTrue(any("资金流向" in item for item in advice.evidence))
+
+    def test_fund_flow_negative_adjusts_sell_risk(self) -> None:
+        bars = _build_yearline_bars(last_close=9.8, last_volume=900)
+        fund_flow = analyze_fund_flow(_build_fund_flow_bars(positive=False))
+
+        without_flow = build_sell_advice("600519", bars, cost_price=9.7)
+        with_flow = build_sell_advice("600519", bars, cost_price=9.7, fund_flow=fund_flow)
+
+        self.assertIsNotNone(with_flow.fund_flow)
+        self.assertGreater(with_flow.sell_risk_score, without_flow.sell_risk_score)
+        self.assertTrue(any("资金流" in item for item in with_flow.risks))
 
     def test_sell_advice_stop_loss_when_loss_exceeds_limit(self) -> None:
         bars = _build_yearline_bars(last_close=9.0, last_volume=2000)
@@ -437,6 +555,135 @@ def _build_high_position_stagnation_bars():
             amount=80_000_000,
         )
     )
+    return bars
+
+
+def _build_rebound_bars():
+    from datetime import date, timedelta
+
+    bars = []
+    start = date(2025, 1, 1)
+    for index in range(259):
+        close = 12 - index * 0.008
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=index),
+                open=close + 0.03,
+                high=close + 0.10,
+                low=close - 0.10,
+                close=close,
+                volume=1000,
+                amount=80_000_000,
+            )
+        )
+    previous_close = bars[-1].close
+    bars.append(
+        PriceVolumeBar(
+            name="测试股票",
+            trade_date=start + timedelta(days=259),
+            open=previous_close - 0.10,
+            high=previous_close - 0.04,
+            low=previous_close - 0.52,
+            close=previous_close - 0.08,
+            volume=950,
+            amount=80_000_000,
+        )
+    )
+    return bars
+
+
+def _build_fund_flow_bars(positive: bool):
+    from datetime import date, timedelta
+
+    bars = []
+    start = date(2026, 1, 1)
+    direction = 1 if positive else -1
+    for index in range(10):
+        main = direction * (10_000_000 + index * 1_000_000)
+        bars.append(
+            FundFlowBar(
+                trade_date=start + timedelta(days=index),
+                main_net_inflow=main,
+                super_large_net_inflow=direction * 4_000_000,
+                large_net_inflow=direction * 3_000_000,
+                medium_net_inflow=-direction * 1_000_000,
+                small_net_inflow=-direction * 6_000_000,
+                main_net_inflow_ratio=direction * 0.04,
+            )
+        )
+    return bars
+
+
+def _build_macd_cross_bars(golden: bool):
+    from datetime import date, timedelta
+
+    if golden:
+        closes = [12 - index * 0.05 for index in range(45)] + [9.6, 9.6, 9.6, 9.8]
+    else:
+        closes = [9 + index * 0.05 for index in range(45)] + [11.4, 11.4, 11.4, 11.2]
+    bars = []
+    start = date(2026, 1, 1)
+    for index, close in enumerate(closes):
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=index),
+                open=close - 0.03,
+                high=close + 0.08,
+                low=close - 0.08,
+                close=close,
+                volume=1000 + index * 5,
+                amount=80_000_000,
+            )
+        )
+    return bars
+
+
+def _build_divergence_bars(bullish: bool):
+    from datetime import date, timedelta
+
+    if bullish:
+        closes = [13 - index * 0.035 for index in range(70)] + [10.35, 10.15, 10.25, 10.05, 10.18, 9.98]
+    else:
+        closes = [8 + index * 0.035 for index in range(70)] + [10.65, 10.85, 10.75, 10.95, 10.82, 11.02]
+    bars = []
+    start = date(2026, 1, 1)
+    for index, close in enumerate(closes):
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=index),
+                open=close - 0.04,
+                high=close + 0.08,
+                low=close - 0.08,
+                close=close,
+                volume=1000 + (index % 6) * 20,
+                amount=80_000_000,
+            )
+        )
+    return bars
+
+
+def _build_no_divergence_bars():
+    from datetime import date, timedelta
+
+    closes = [10 + ((index % 6) - 3) * 0.03 for index in range(90)]
+    bars = []
+    start = date(2026, 1, 1)
+    for index, close in enumerate(closes):
+        bars.append(
+            PriceVolumeBar(
+                name="测试股票",
+                trade_date=start + timedelta(days=index),
+                open=close - 0.02,
+                high=close + 0.05,
+                low=close - 0.05,
+                close=close,
+                volume=1000,
+                amount=80_000_000,
+            )
+        )
     return bars
 
 if __name__ == "__main__":

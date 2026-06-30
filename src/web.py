@@ -101,7 +101,7 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
         try:
             payload = self._read_json()
             symbol = _normalize_symbol(str(payload.get("symbol", "")))
-            algorithm = str(payload.get("algorithm", "knn"))
+            algorithm = str(payload.get("algorithm", "robust_ensemble"))
             if not symbol:
                 self._send_json({"ok": False, "error": "股票代码必须是 6 位数字。"}, status=400)
                 return
@@ -118,6 +118,8 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
                     "advice": advice_to_dict(advice),
                     "chart": _chart_payload(chart_bars),
                     "chan": advice.chan_structure.to_dict() if advice.chan_structure else None,
+                    "fund_flow": asdict(advice.fund_flow) if advice.fund_flow else None,
+                    "divergence": asdict(advice.divergence) if advice.divergence else None,
                     "beginner": _beginner_payload(advice),
                 }
             )
@@ -138,7 +140,14 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             max_loss_rate = _parse_float(payload.get("max_loss_rate"), 0.08)
             target_profit_rate = _parse_float(payload.get("target_profit_rate"), 0.20)
             sell_advice = analyze_stock_sell(symbol, cost_price, quantity, max_loss_rate, target_profit_rate)
-            self._send_json({"ok": True, "sell_advice": asdict(sell_advice)})
+            self._send_json(
+                {
+                    "ok": True,
+                    "sell_advice": asdict(sell_advice),
+                    "fund_flow_risk": asdict(sell_advice.fund_flow) if sell_advice.fund_flow else None,
+                    "divergence_risk": asdict(sell_advice.divergence) if sell_advice.divergence else None,
+                }
+            )
         except DataRefreshError as exc:
             self._send_json({"ok": False, "error": str(exc)}, status=502)
         except json.JSONDecodeError:
@@ -147,7 +156,7 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
     def _handle_scan(self) -> None:
         try:
             payload = self._read_json()
-            algorithm = str(payload.get("algorithm", "knn"))
+            algorithm = str(payload.get("algorithm", "robust_ensemble"))
             symbols = parse_symbols(str(payload.get("symbols", "")).replace("\n", ","))
             top_n = _parse_int(payload.get("top"), 10)
             min_score = _parse_int(payload.get("min_score"), 52)
@@ -183,7 +192,7 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
     def _handle_market_scan_start(self) -> None:
         try:
             payload = self._read_json()
-            algorithm = str(payload.get("algorithm", "knn"))
+            algorithm = str(payload.get("algorithm", "robust_ensemble"))
             top_n = _parse_int(payload.get("top"), 10)
             if algorithm not in ALGORITHMS:
                 self._send_json({"ok": False, "error": "机器学习算法不支持。"}, status=400)
@@ -271,6 +280,7 @@ def _parse_optional_float(value) -> float | None:
 def _chart_payload(bars) -> dict:
     return {
         "dates": [bar.trade_date.isoformat() for bar in bars],
+        "opens": [bar.open for bar in bars],
         "highs": [bar.high for bar in bars],
         "lows": [bar.low for bar in bars],
         "closes": [bar.close for bar in bars],

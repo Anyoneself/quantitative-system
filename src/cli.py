@@ -31,7 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     advise_parser = subparsers.add_parser("advise", help="分析单只股票并输出买卖建议")
     advise_parser.add_argument("symbol", help="股票代码，例如 600519")
-    advise_parser.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="knn", help="机器学习算法")
+    advise_parser.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="robust_ensemble", help="机器学习算法")
     advise_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
 
     sell_parser = subparsers.add_parser("sell", help="分析单只股票的持仓卖出风险")
@@ -45,7 +45,7 @@ def _build_parser() -> argparse.ArgumentParser:
     scan_parser = subparsers.add_parser("scan", help="定时扫描股票池并输出 Top 推荐股票")
     scan_parser.add_argument("--symbols", help="逗号分隔的股票代码，例如 601988,600519")
     scan_parser.add_argument("--pool-file", help="股票池文件，每行一个股票代码")
-    scan_parser.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="knn", help="机器学习算法")
+    scan_parser.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="robust_ensemble", help="机器学习算法")
     scan_parser.add_argument("--top", type=int, default=10, help="输出前 N 只股票，默认 10")
     scan_parser.add_argument("--min-score", type=int, default=52, help="最低机器学习评分，默认 52")
     scan_parser.add_argument("--interval", type=int, default=600, help="扫描间隔秒数，默认 600")

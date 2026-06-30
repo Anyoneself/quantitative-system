@@ -61,6 +61,14 @@ def _format_text(advice: Advice) -> str:
         lines.extend(["", "缠论结构辅助："])
         lines.extend(_chan_lines(advice.chan_structure))
 
+    if advice.fund_flow:
+        lines.extend(["", "资金流向："])
+        lines.extend(_fund_flow_lines(advice.fund_flow))
+
+    if advice.divergence:
+        lines.extend(["", "背驰信号："])
+        lines.extend(_divergence_lines(advice.divergence))
+
     lines.append("")
     lines.append("后续观察：")
     lines.extend(_numbered_lines(advice.observations))
@@ -100,6 +108,14 @@ def _format_sell_text(advice: SellAdvice) -> str:
             ]
         )
 
+    if advice.fund_flow:
+        lines.extend(["", "资金流卖出风险："])
+        lines.extend(_fund_flow_lines(advice.fund_flow))
+
+    if advice.divergence:
+        lines.extend(["", "背驰风险："])
+        lines.extend(_divergence_lines(advice.divergence))
+
     lines.extend(["", "卖出理由："])
     lines.extend(_numbered_lines(advice.reasons))
     lines.extend(["", "风险提示："])
@@ -122,6 +138,7 @@ def _indicator_lines(indicators) -> list[str]:
         f"- 成交量 / 5 日均量：{indicators.volume_ratio_5d:.2f}",
         f"- 成交量 / 20 日均量：{indicators.volume_ratio_20d:.2f}",
         f"- 年线 MA250：{indicators.ma250:.2f}" if indicators.ma250 > 0 else "- 年线 MA250：数据不足",
+        f"- MACD：DIF {indicators.macd_dif:.4f}，DEA {indicators.macd_dea:.4f}，柱 {indicators.macd_histogram:.4f}",
         f"- 首日高点：{indicators.first_day_high:.2f}" if indicators.first_day_high > 0 else "- 首日高点：不适用",
         f"- 是否涨停：{_yes_no(indicators.is_limit_up)}",
         f"- 是否跌停：{_yes_no(indicators.is_limit_down)}",
@@ -131,14 +148,15 @@ def _indicator_lines(indicators) -> list[str]:
 def _ml_lines(prediction) -> list[str]:
     lines = [
         f"- 算法：{prediction.algorithm_name}",
-        f"- 历史相似上涨占比：{_format_percent(prediction.buy_probability)}",
+        f"- 预测周期：未来 {prediction.horizon_days} 个交易日" if prediction.horizon_days > 1 else "- 预测周期：下一交易日",
+        f"- 历史达标占比：{_format_percent(prediction.buy_probability)}",
         f"- 训练样本数：{prediction.sample_count}",
     ]
     if prediction.neighbor_count > 0:
         lines.extend(
             [
                 f"- 最近邻样本数：{prediction.neighbor_count}",
-                f"- 最近邻上涨样本数：{prediction.positive_count}",
+                f"- 最近邻达标样本数：{prediction.positive_count}",
             ]
         )
     return lines
@@ -158,8 +176,40 @@ def _chan_lines(chan_structure) -> list[str]:
     return lines
 
 
+def _fund_flow_lines(fund_flow) -> list[str]:
+    return [
+        f"- 信号：{fund_flow.signal}",
+        f"- 当日主力净流入：{_format_amount(fund_flow.latest_main_net_inflow)}",
+        f"- 当日主力净流入占比：{_format_percent(fund_flow.latest_main_net_inflow_ratio)}",
+        f"- 5 日主力净流入：{_format_amount(fund_flow.main_inflow_5d)}",
+        f"- 10 日主力净流入：{_format_amount(fund_flow.main_inflow_10d)}",
+        f"- 5 日净流入天数：{fund_flow.positive_days_5d}",
+        f"- 资金流调整分：{fund_flow.fund_flow_score_adjustment:+d}",
+        f"- 说明：{fund_flow.explanation}",
+    ]
+
+
+def _divergence_lines(divergence) -> list[str]:
+    return [
+        f"- 类型：{divergence.signal}",
+        f"- 置信度：{divergence.confidence}",
+        f"- 买入评分调整：{divergence.bullish_score_adjustment:+d}",
+        f"- 卖出风险调整：{divergence.bearish_risk_adjustment:+d}",
+        f"- MA5/MA10 缠绕次数：{divergence.ma5_ma10_weaving_count}",
+        f"- 依据：{'；'.join(divergence.reasons)}",
+    ]
+
+
 def _format_percent(value: float) -> str:
     return f"{value * 100:.2f}%"
+
+
+def _format_amount(value: float) -> str:
+    if abs(value) >= 100_000_000:
+        return f"{value / 100_000_000:.2f} 亿元"
+    if abs(value) >= 10_000:
+        return f"{value / 10_000:.2f} 万元"
+    return f"{value:.2f} 元"
 
 
 def _yes_no(value: bool) -> str:

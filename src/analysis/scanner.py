@@ -77,7 +77,7 @@ def format_scan_report(results: list[ScanResult]) -> str:
         lines.extend(
             [
                 f"{index}. {item.symbol} {item.name}",
-                f"   建议：{item.action}，评分：{item.score}，历史相似上涨占比：{item.probability * 100:.2f}%",
+                f"   建议：{item.action}，评分：{item.score}，历史达标占比：{item.probability * 100:.2f}%",
                 f"   理由：{item.reason}",
                 f"   风险：{item.risk}",
                 f"   缠论：{item.chan_summary or '无结构摘要'}",

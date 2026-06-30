@@ -156,9 +156,13 @@ function renderAdvice(payload) {
   const prediction = advice.ml_prediction;
   const beginner = payload.beginner;
   const chan = payload.chan;
+  const fundFlow = payload.fund_flow;
+  const divergence = payload.divergence;
 
-  document.querySelector("#stock-meta").textContent =
-    `${indicators.symbol} · ${indicators.name || "未知"} · ${indicators.analysis_date}`;
+  document.querySelector("#stock-code").textContent = indicators.symbol;
+  document.querySelector("#stock-name").textContent = indicators.name || "未知";
+  document.querySelector("#stock-date").textContent = indicators.analysis_date;
+  document.querySelector("#stock-link").href = `https://stockpage.10jqka.com.cn/${indicators.symbol}/`;
   document.querySelector("#headline").textContent =
     `${actionText[advice.action] || advice.action}：${beginner.headline}`;
   document.querySelector("#score").textContent = advice.score;
@@ -168,6 +172,7 @@ function renderAdvice(payload) {
   document.querySelector("#return-5d").textContent = formatPercent(indicators.return_5d);
   document.querySelector("#volume-ratio").textContent = indicators.volume_ratio_20d.toFixed(2);
   document.querySelector("#ma250").textContent = indicators.ma250 > 0 ? formatNumber(indicators.ma250) : "数据不足";
+  document.querySelector("#macd-summary").textContent = `${indicators.macd_dif >= indicators.macd_dea ? "多头" : "空头"} ${indicators.macd_histogram.toFixed(3)}`;
   document.querySelector("#first-day-high").textContent = indicators.first_day_high > 0 ? formatNumber(indicators.first_day_high) : "不适用";
   document.querySelector("#data-range").textContent =
     `${payload.chart.dates[payload.chart.dates.length - 1]} · ${payload.chart.dates.length} 个交易日`;
@@ -178,7 +183,48 @@ function renderAdvice(payload) {
   renderList("#observations", advice.observations);
   renderMl(prediction);
   renderChan(chan);
+  renderFundFlow(fundFlow);
+  renderDivergence(divergence);
   drawStockChart(payload.chart, chan);
+}
+
+function renderDivergence(divergence) {
+  if (!divergence) {
+    document.querySelector("#divergence-adjustment").textContent = "未参与评分";
+    document.querySelector("#divergence-signal").textContent = "样本不足";
+    document.querySelector("#divergence-confidence").textContent = "--";
+    document.querySelector("#divergence-buy").textContent = "--";
+    document.querySelector("#divergence-sell").textContent = "--";
+    document.querySelector("#divergence-explanation").textContent = "背驰样本不足，本次评分未纳入背驰信号。";
+    return;
+  }
+  const buySign = divergence.bullish_score_adjustment > 0 ? "+" : "";
+  const sellSign = divergence.bearish_risk_adjustment > 0 ? "+" : "";
+  document.querySelector("#divergence-adjustment").textContent = `买入 ${buySign}${divergence.bullish_score_adjustment} / 卖出 ${sellSign}${divergence.bearish_risk_adjustment}`;
+  document.querySelector("#divergence-signal").textContent = divergence.signal;
+  document.querySelector("#divergence-confidence").textContent = String(divergence.confidence);
+  document.querySelector("#divergence-buy").textContent = `${buySign}${divergence.bullish_score_adjustment}`;
+  document.querySelector("#divergence-sell").textContent = `${sellSign}${divergence.bearish_risk_adjustment}`;
+  document.querySelector("#divergence-explanation").textContent = divergence.reasons.join("；");
+}
+
+function renderFundFlow(fundFlow) {
+  if (!fundFlow) {
+    document.querySelector("#fund-flow-adjustment").textContent = "未参与评分";
+    document.querySelector("#fund-flow-signal").textContent = "不可用";
+    document.querySelector("#fund-flow-latest").textContent = "--";
+    document.querySelector("#fund-flow-5d").textContent = "--";
+    document.querySelector("#fund-flow-10d").textContent = "--";
+    document.querySelector("#fund-flow-explanation").textContent = "资金流数据暂不可用，本次评分未纳入资金流。";
+    return;
+  }
+  const sign = fundFlow.fund_flow_score_adjustment > 0 ? "+" : "";
+  document.querySelector("#fund-flow-adjustment").textContent = `资金流调整 ${sign}${fundFlow.fund_flow_score_adjustment}`;
+  document.querySelector("#fund-flow-signal").textContent = fundFlow.signal;
+  document.querySelector("#fund-flow-latest").textContent = formatAmount(fundFlow.latest_main_net_inflow);
+  document.querySelector("#fund-flow-5d").textContent = formatAmount(fundFlow.main_inflow_5d);
+  document.querySelector("#fund-flow-10d").textContent = formatAmount(fundFlow.main_inflow_10d);
+  document.querySelector("#fund-flow-explanation").textContent = fundFlow.explanation;
 }
 
 async function startMarketScan() {
@@ -333,12 +379,13 @@ function renderMl(prediction) {
   target.innerHTML = "";
   const rows = [
     ["算法", prediction.algorithm_name],
-    ["历史相似上涨占比", formatPercent(prediction.buy_probability)],
+    ["预测周期", prediction.horizon_days > 1 ? `未来 ${prediction.horizon_days} 个交易日` : "下一交易日"],
+    ["历史达标占比", formatPercent(prediction.buy_probability)],
     ["训练样本数", String(prediction.sample_count)],
   ];
   if (prediction.neighbor_count > 0) {
     rows.push(["最近邻样本数", String(prediction.neighbor_count)]);
-    rows.push(["最近邻上涨样本数", String(prediction.positive_count)]);
+    rows.push(["最近邻达标样本数", String(prediction.positive_count)]);
   }
   rows.forEach(([label, value]) => {
     const row = document.createElement("div");
@@ -370,13 +417,14 @@ function drawStockChart(chart, chan) {
   const height = canvas.height;
   ctx.clearRect(0, 0, width, height);
 
+  const opens = chart.opens || chart.closes;
   const closes = chart.closes;
   const highs = chart.highs || closes;
   const lows = chart.lows || closes;
   const volumes = chart.volumes;
   const centerPrices = chan && chan.center ? [chan.center.lower, chan.center.upper] : [];
-  const minClose = Math.min(...lows, ...centerPrices);
-  const maxClose = Math.max(...highs, ...centerPrices);
+  const minPrice = Math.min(...lows, ...centerPrices);
+  const maxPrice = Math.max(...highs, ...centerPrices);
   const maxVolume = Math.max(...volumes);
   const pad = 34;
   const chartHeight = height * 0.68;
@@ -384,33 +432,48 @@ function drawStockChart(chart, chan) {
   const volumeHeight = height - volumeTop - 20;
 
   drawGrid(ctx, width, height, pad);
-  drawChanCenter(ctx, chan, closes.length, minClose, maxClose, width, chartHeight, pad);
-
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "#58d6a6";
-  ctx.beginPath();
-  closes.forEach((value, index) => {
-    const x = pad + (index / (closes.length - 1)) * (width - pad * 2);
-    const y = pad + (1 - normalize(value, minClose, maxClose)) * (chartHeight - pad);
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  drawChanStrokes(ctx, chan, closes.length, minClose, maxClose, width, chartHeight, pad);
-  drawChanPoints(ctx, chan, closes.length, minClose, maxClose, width, chartHeight, pad);
+  drawChanCenter(ctx, chan, closes.length, minPrice, maxPrice, width, chartHeight, pad);
+  drawCandles(ctx, opens, highs, lows, closes, minPrice, maxPrice, width, chartHeight, pad);
+  drawChanStrokes(ctx, chan, closes.length, minPrice, maxPrice, width, chartHeight, pad);
+  drawChanPoints(ctx, chan, closes.length, minPrice, maxPrice, width, chartHeight, pad);
 
   const barWidth = (width - pad * 2) / volumes.length * 0.55;
   volumes.forEach((value, index) => {
     const x = pad + (index / (volumes.length - 1)) * (width - pad * 2) - barWidth / 2;
     const barHeight = normalize(value, 0, maxVolume) * volumeHeight;
-    ctx.fillStyle = "rgba(217, 182, 106, 0.55)";
+    ctx.fillStyle = closes[index] >= opens[index] ? "rgba(88, 214, 166, 0.45)" : "rgba(255, 125, 125, 0.42)";
     ctx.fillRect(x, volumeTop + volumeHeight - barHeight, barWidth, barHeight);
   });
 
-  ctx.fillStyle = "#9ba9a3";
+  ctx.fillStyle = "#8da6c9";
   ctx.font = "22px sans-serif";
   ctx.fillText(`收盘 ${formatNumber(closes[closes.length - 1])}`, pad, 28);
+}
+
+function drawCandles(ctx, opens, highs, lows, closes, minPrice, maxPrice, width, chartHeight, pad) {
+  const candleWidth = Math.max(4, ((width - pad * 2) / closes.length) * 0.58);
+  closes.forEach((close, index) => {
+    const open = opens[index];
+    const high = highs[index];
+    const low = lows[index];
+    const x = xForIndex(index, width, pad, closes.length);
+    const openY = yForPrice(open, minPrice, maxPrice, chartHeight, pad);
+    const closeY = yForPrice(close, minPrice, maxPrice, chartHeight, pad);
+    const highY = yForPrice(high, minPrice, maxPrice, chartHeight, pad);
+    const lowY = yForPrice(low, minPrice, maxPrice, chartHeight, pad);
+    const rising = close >= open;
+    ctx.strokeStyle = rising ? "#35d399" : "#ff7185";
+    ctx.fillStyle = rising ? "rgba(53, 211, 153, 0.24)" : "rgba(255, 113, 133, 0.68)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, highY);
+    ctx.lineTo(x, lowY);
+    ctx.stroke();
+    const bodyTop = Math.min(openY, closeY);
+    const bodyHeight = Math.max(2, Math.abs(closeY - openY));
+    ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
+    ctx.strokeRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
+  });
 }
 
 function drawChanCenter(ctx, chan, pointCount, minClose, maxClose, width, chartHeight, pad) {
@@ -420,9 +483,9 @@ function drawChanCenter(ctx, chan, pointCount, minClose, maxClose, width, chartH
   const endX = xForIndex(center.end_index, width, pad, pointCount);
   const upperY = yForPrice(center.upper, minClose, maxClose, chartHeight, pad);
   const lowerY = yForPrice(center.lower, minClose, maxClose, chartHeight, pad);
-  ctx.fillStyle = "rgba(217, 182, 106, 0.14)";
+  ctx.fillStyle = "rgba(119, 213, 255, 0.12)";
   ctx.fillRect(startX, upperY, Math.max(8, endX - startX), lowerY - upperY);
-  ctx.strokeStyle = "rgba(217, 182, 106, 0.68)";
+  ctx.strokeStyle = "rgba(119, 213, 255, 0.64)";
   ctx.lineWidth = 1.5;
   ctx.strokeRect(startX, upperY, Math.max(8, endX - startX), lowerY - upperY);
 }
@@ -448,7 +511,7 @@ function drawChanPoints(ctx, chan, pointCount, minClose, maxClose, width, chartH
   chan.points.forEach((point) => {
     const x = xForIndex(point.index, width, pad, pointCount);
     const y = yForPrice(point.price, minClose, maxClose, chartHeight, pad);
-    ctx.fillStyle = point.kind === "top" ? "#ff7d7d" : "#d9b66a";
+    ctx.fillStyle = point.kind === "top" ? "#ff7185" : "#77d5ff";
     ctx.beginPath();
     ctx.arc(x, y, 5, 0, Math.PI * 2);
     ctx.fill();
@@ -469,7 +532,7 @@ function yForPrice(price, minClose, maxClose, chartHeight, pad) {
 }
 
 function drawGrid(ctx, width, height, pad) {
-  ctx.strokeStyle = "rgba(211, 223, 215, 0.10)";
+  ctx.strokeStyle = "rgba(151, 190, 255, 0.12)";
   ctx.lineWidth = 1;
   for (let index = 0; index < 5; index += 1) {
     const y = pad + index * ((height - pad * 2) / 4);
@@ -478,24 +541,6 @@ function drawGrid(ctx, width, height, pad) {
     ctx.lineTo(width - pad, y);
     ctx.stroke();
   }
-}
-
-function drawAmbientChart() {
-  const canvas = document.querySelector("#ambient-chart");
-  const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
-  ctx.clearRect(0, 0, width, height);
-  ctx.strokeStyle = "rgba(88, 214, 166, 0.62)";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  for (let index = 0; index < 72; index += 1) {
-    const x = (index / 71) * width;
-    const y = height * 0.54 + Math.sin(index * 0.38) * 34 - index * 0.45;
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
 }
 
 function normalize(value, min, max) {
@@ -511,6 +556,13 @@ function formatPercent(value) {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
 
+function formatAmount(value) {
+  const number = Number(value);
+  if (Math.abs(number) >= 100000000) return `${(number / 100000000).toFixed(2)}亿`;
+  if (Math.abs(number) >= 10000) return `${(number / 10000).toFixed(2)}万`;
+  return number.toFixed(2);
+}
+
 function parseOptionalNumber(value) {
   const cleaned = String(value || "").trim();
   if (!cleaned) return null;
@@ -518,4 +570,25 @@ function parseOptionalNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-drawAmbientChart();
+function setupPointerEffects() {
+  window.addEventListener("pointermove", (event) => {
+    const x = `${(event.clientX / window.innerWidth) * 100}%`;
+    const y = `${(event.clientY / window.innerHeight) * 100}%`;
+    document.documentElement.style.setProperty("--pointer-x", x);
+    document.documentElement.style.setProperty("--pointer-y", y);
+  });
+
+  document.querySelectorAll("button, .score-card, .detail-card, .chart-card, .chan-panel").forEach((node) => {
+    node.addEventListener("pointermove", (event) => {
+      const rect = node.getBoundingClientRect();
+      const offsetX = (event.clientX - rect.left - rect.width / 2) / rect.width;
+      const offsetY = (event.clientY - rect.top - rect.height / 2) / rect.height;
+      node.style.transform = `translate3d(${offsetX * 5}px, ${offsetY * 5 - 2}px, 0)`;
+    });
+    node.addEventListener("pointerleave", () => {
+      node.style.transform = "";
+    });
+  });
+}
+
+setupPointerEffects();
