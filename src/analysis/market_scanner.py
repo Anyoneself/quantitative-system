@@ -108,10 +108,13 @@ class MarketScanner:
         if self._status == "loading_universe":
             return "正在抓取全 A 股票列表"
         if self._status == "scanning":
-            return (
+            message = (
                 f"分析中，已完成 {self._scanned_count}/{self._total_count}，"
                 f"已跳过 {self._skipped_count}，失败 {self._failed_count}"
             )
+            if self._error:
+                return f"{message}，最近失败：{self._error[:60]}"
+            return message
         if self._status == "finished":
             return "本轮全量完成"
         if self._status == "stopping":

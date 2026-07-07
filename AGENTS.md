@@ -25,7 +25,7 @@
 ## 目录与模块
 
 - 文档放在 `doc/`。
-- 源码后续统一放在 `src/quant_system/`。
+- 源码后续统一放在 `src/`。
 - 脚本后续统一放在 `scripts/`。
 - 测试后续统一放在 `tests/`。
 - 数据文件不提交到仓库，除非是小型测试样例。
@@ -39,7 +39,6 @@ quantitative-system/
 ├── README.md
 ├── doc/
 ├── src/
-│   └── quant_system/
 ├── scripts/
 └── tests/
 ```

@@ -249,7 +249,7 @@ quant advise 600519 --format json
 第一版只需要以下模块：
 
 ```text
-src/quant_system/
+src/
 ├── cli.py
 ├── data/
 │   ├── models.py

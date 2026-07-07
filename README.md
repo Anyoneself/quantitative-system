@@ -172,7 +172,7 @@ http://127.0.0.1:8000
 - 系统会逐页抓取全 A 股票列表，第一页股票拿到后就立刻开始逐只抓取日线数据并分析。
 - 后台每分析完一只股票就更新候选结果，并通过事件流实时推送给前端，页面会立刻刷新已扫描数量、总数量和当前 Top 10。
 - 必须等一整轮全 A 股票全部分析完成后，本轮 Top 10 才是完整结果；后台不会自动开始下一轮。
-- 全 A 扫描请求数量较大，请根据网络情况耐心等待。
+- 全 A 扫描请求数量较大，系统默认会限速并重试；如果仍出现 `HTTP Error 456`，说明公开行情接口正在限流，可以调大 `PUBLIC_REQUEST_INTERVAL_SECONDS` 后重启扫描。
 
 ## 环境变量
 
@@ -181,6 +181,9 @@ http://127.0.0.1:8000
 ```text
 PUBLIC_DATA_USER_AGENT=
 PUBLIC_DATA_TIMEOUT_SECONDS=
+PUBLIC_DATA_RETRIES=
+PUBLIC_DATA_RETRY_BASE_SECONDS=
+PUBLIC_REQUEST_INTERVAL_SECONDS=
 PUBLIC_STOCK_LIST_PAGE_SIZE=
 PUBLIC_KLINE_DAYS=
 MARKET_SCAN_WORKERS=
@@ -191,6 +194,9 @@ MARKET_TASK_TIMEOUT_SECONDS=
 
 - `PUBLIC_DATA_USER_AGENT`：公开行情请求使用的浏览器标识。
 - `PUBLIC_DATA_TIMEOUT_SECONDS`：公开行情请求超时时间，默认 `8` 秒。
+- `PUBLIC_DATA_RETRIES`：公开行情失败重试次数，默认 `2` 次。
+- `PUBLIC_DATA_RETRY_BASE_SECONDS`：公开行情重试基础等待秒数，默认 `1` 秒。
+- `PUBLIC_REQUEST_INTERVAL_SECONDS`：公开行情全局请求间隔，默认 `0.25` 秒，用于降低全 A 扫描触发限流的概率。
 - `PUBLIC_STOCK_LIST_PAGE_SIZE`：公开行情股票列表每页数量，默认 `80`。
 - `PUBLIC_KLINE_DAYS`：公开日线接口拉取的历史交易日数量，默认 `260`，用于覆盖年线 MA250 和前一日年线。
 - `MARKET_SCAN_WORKERS`：全 A 扫描并发线程数，默认 `4`。

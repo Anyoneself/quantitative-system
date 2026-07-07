@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from datetime import datetime
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -10,6 +12,8 @@ from data.errors import DataRefreshError
 from data.models import PriceVolumeBar, StockInfo
 
 _STOCK_NAME_CACHE: dict[str, str] | None = None
+_REQUEST_LOCK = threading.Lock()
+_LAST_REQUEST_AT = 0.0
 DEFAULT_KLINE_DAYS = 260
 
 
@@ -87,12 +91,21 @@ def _fetch_json(url: str, referer: str):
         "Accept": "application/json,text/plain,*/*",
         "Referer": referer,
     }
-    request = Request(url, headers=headers)
-    try:
-        with urlopen(request, timeout=_request_timeout()) as response:
-            text = response.read().decode("utf-8", errors="replace")
-    except OSError as exc:
-        raise DataRefreshError(f"公开行情接口请求失败：{exc}") from exc
+    last_error = None
+    for attempt in range(_request_retries() + 1):
+        request = Request(url, headers=headers)
+        _wait_for_request_slot()
+        try:
+            with urlopen(request, timeout=_request_timeout()) as response:
+                text = response.read().decode("utf-8", errors="replace")
+                break
+        except OSError as exc:
+            last_error = exc
+            if attempt >= _request_retries():
+                raise DataRefreshError(f"公开行情接口请求失败：{exc}") from exc
+            time.sleep(_retry_delay_seconds(attempt))
+    else:
+        raise DataRefreshError(f"公开行情接口请求失败：{last_error}")
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
@@ -146,3 +159,24 @@ def _to_sina_symbol(symbol: str) -> str:
 
 def _request_timeout() -> float:
     return max(1, float(os.getenv("PUBLIC_DATA_TIMEOUT_SECONDS", "8")))
+
+
+def _request_retries() -> int:
+    return max(0, int(os.getenv("PUBLIC_DATA_RETRIES", "2")))
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    return min(8.0, float(os.getenv("PUBLIC_DATA_RETRY_BASE_SECONDS", "1")) * (attempt + 1))
+
+
+def _wait_for_request_slot() -> None:
+    global _LAST_REQUEST_AT
+    interval = max(0.0, float(os.getenv("PUBLIC_REQUEST_INTERVAL_SECONDS", "0.25")))
+    if interval <= 0:
+        return
+    with _REQUEST_LOCK:
+        now = time.time()
+        wait_seconds = interval - (now - _LAST_REQUEST_AT)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        _LAST_REQUEST_AT = time.time()

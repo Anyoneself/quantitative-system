@@ -82,7 +82,7 @@ quantitative-system/
 │   ├── run_paper_trading.py
 │   └── run_live_trading.py
 ├── src/
-│   └── quant_system/
+│   └── src/
 │       ├── __init__.py
 │       ├── common/
 │       │   ├── config.py
@@ -160,7 +160,7 @@ quantitative-system/
 
 公开行情数据采集设计：
 
-- 采集入口：将公开行情作为第一数据源，统一封装在 `src/quant_system/data/sources/public_sources.py`。
+- 采集入口：将公开行情作为第一数据源，统一封装在 `src/data/public_sources.py`。
 - 请求客户端：`public_client.py` 负责请求头、会话、超时、代理配置、限速和重试。
 - 解析器：`public_parser.py` 只负责把 HTML、JSON 或接口响应解析成标准字段。
 - 任务调度：`crawler/scheduler.py` 负责日线、基础信息、财务数据等不同任务的定时采集。
@@ -772,7 +772,7 @@ created_at
 最直接的下一步是把项目初始化为标准 Python 包，并完成以下内容：
 
 - `pyproject.toml`
-- `src/quant_system/`
+- `src/`
 - `config/base.yaml`
 - `quant advise <股票代码>` 单股分析 CLI
 - 数据 schema
