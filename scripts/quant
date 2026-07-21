@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
+if [ "${1:-}" = "web" ]; then
+  shift
+  exec python3 -m web "$@"
+fi
+
+exec python3 -m cli "$@"

@@ -481,7 +481,7 @@ button:hover .button-light {
 
 .market-strip,
 .scan-summary,
-.chan-summary {
+.metric-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
@@ -493,9 +493,9 @@ button:hover .button-light {
 
 .market-strip div,
 .scan-summary div,
-.chan-summary div,
+.metric-summary div,
 .chart-card,
-.chan-panel,
+.metric-panel,
 .detail-card {
   border: 1px solid transparent;
   border-radius: 14px;
@@ -510,9 +510,9 @@ button:hover .button-light {
 
 .market-strip div:hover,
 .scan-summary div:hover,
-.chan-summary div:hover,
+.metric-summary div:hover,
 .chart-card:hover,
-.chan-panel:hover,
+.metric-panel:hover,
 .detail-card:hover {
   transform: translateY(-3px);
   box-shadow:
@@ -523,33 +523,33 @@ button:hover .button-light {
 
 .market-strip div,
 .scan-summary div,
-.chan-summary div {
+.metric-summary div {
   padding: 16px;
 }
 
 .market-strip strong,
 .scan-summary strong,
-.chan-summary strong {
+.metric-summary strong {
   display: block;
   margin-top: 8px;
   font-size: 22px;
 }
 
-.chan-summary span {
+.metric-summary span {
   color: var(--muted);
 }
 
 .chart-card,
-.chan-panel {
+.metric-panel {
   padding: 18px;
 }
 
-.chan-panel {
+.metric-panel {
   display: grid;
   gap: 14px;
 }
 
-.chan-note {
+.metric-note {
   border: 1px solid rgba(119, 213, 255, 0.26);
   border-radius: 12px;
   background: linear-gradient(135deg, rgba(36, 118, 214, 0.18), rgba(11, 35, 69, 0.38));
@@ -558,11 +558,11 @@ button:hover .button-light {
   line-height: 1.75;
 }
 
-.chan-note p {
+.metric-note p {
   margin: 0;
 }
 
-.chan-note p + p {
+.metric-note p + p {
   margin-top: 8px;
   color: var(--muted);
 }
@@ -716,7 +716,7 @@ button:hover .button-light {
 
   .market-strip,
   .scan-summary,
-  .chan-summary,
+  .metric-summary,
   .detail-grid {
     grid-template-columns: 1fr;
   }

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from analysis.chan_theory import ChanStructureResult, analyze_chan_structure
 from analysis.divergence import DivergenceResult
 from analysis.fund_flow import FundFlowResult
 from analysis.indicators import IndicatorResult, calculate_indicators
@@ -16,7 +15,6 @@ class SellKeyLevels:
     close: float
     ma20: float
     ma250: float
-    chan_center_lower: float | None
     recent_high_close: float
 
 
@@ -31,7 +29,6 @@ class SellAdvice:
     key_levels: SellKeyLevels | None
     indicators: IndicatorResult | None
     patterns: PatternResult | None
-    chan_structure: ChanStructureResult | None
     fund_flow: FundFlowResult | None = None
     divergence: DivergenceResult | None = None
 
@@ -47,7 +44,6 @@ def make_no_sell_data_advice(message: str) -> SellAdvice:
         key_levels=None,
         indicators=None,
         patterns=None,
-        chan_structure=None,
         fund_flow=None,
         divergence=None,
     )
@@ -70,19 +66,17 @@ def build_sell_advice(
         return make_no_sell_data_advice(f"股票 {symbol} 数据不足，至少需要 21 个交易日。")
 
     patterns = detect_patterns(indicators)
-    chan_structure = analyze_chan_structure(bars[-90:])
     recent_high_close = max(bar.close for bar in bars[-20:])
     key_levels = SellKeyLevels(
         cost_price=cost_price,
         close=indicators.close,
         ma20=indicators.ma20,
         ma250=indicators.ma250,
-        chan_center_lower=chan_structure.center.lower if chan_structure.center else None,
         recent_high_close=recent_high_close,
     )
 
     if cost_price is None or cost_price <= 0:
-        return _technical_risk_advice(indicators, patterns, chan_structure, key_levels, fund_flow, divergence)
+        return _technical_risk_advice(indicators, patterns, key_levels, fund_flow, divergence)
 
     holding_return = (indicators.close - cost_price) / cost_price
     score = 0
@@ -101,8 +95,8 @@ def build_sell_advice(
     else:
         observations.append(f"当前持仓收益率 {_format_percent(holding_return)}，尚未触发硬止损。")
 
-    score = _apply_technical_sell_risks(score, indicators, patterns, chan_structure, risks, reasons, observations)
-    score = _apply_fund_flow_sell_risk(score, fund_flow, patterns, chan_structure, risks, reasons, observations)
+    score = _apply_technical_sell_risks(score, indicators, patterns, risks, reasons, observations)
+    score = _apply_fund_flow_sell_risk(score, fund_flow, patterns, risks, reasons, observations)
     score = _apply_divergence_sell_risk(score, divergence, risks, reasons, observations)
 
     drawdown_from_recent_high = _safe_ratio(recent_high_close - indicators.close, recent_high_close)
@@ -113,10 +107,7 @@ def build_sell_advice(
             "已有利润出现回吐，需要考虑移动止盈。"
         )
 
-    high_position_risk = patterns.high_volume_stagnation or patterns.high_20d_return or chan_structure.risk_signal in {
-        "顶背驰候选",
-        "高位缩量候选",
-    }
+    high_position_risk = patterns.high_volume_stagnation or patterns.high_20d_return
     if holding_return >= target_profit_rate and high_position_risk:
         score += 15
         risks.append(
@@ -154,7 +145,6 @@ def build_sell_advice(
         key_levels=key_levels,
         indicators=indicators,
         patterns=patterns,
-        chan_structure=chan_structure,
         fund_flow=fund_flow,
         divergence=divergence,
     )
@@ -163,7 +153,6 @@ def build_sell_advice(
 def _technical_risk_advice(
     indicators: IndicatorResult,
     patterns: PatternResult,
-    chan_structure: ChanStructureResult,
     key_levels: SellKeyLevels,
     fund_flow: FundFlowResult | None,
     divergence: DivergenceResult | None,
@@ -172,8 +161,8 @@ def _technical_risk_advice(
     reasons: list[str] = []
     risks = ["未输入持仓成本，系统只能给技术风险提示，不能判断真实止盈或止损。"]
     observations = ["输入持仓成本后，可以计算持仓收益率、止损线和止盈观察区。"]
-    score = _apply_technical_sell_risks(score, indicators, patterns, chan_structure, risks, reasons, observations)
-    score = _apply_fund_flow_sell_risk(score, fund_flow, patterns, chan_structure, risks, reasons, observations)
+    score = _apply_technical_sell_risks(score, indicators, patterns, risks, reasons, observations)
+    score = _apply_fund_flow_sell_risk(score, fund_flow, patterns, risks, reasons, observations)
     score = _apply_divergence_sell_risk(score, divergence, risks, reasons, observations)
     score = _clamp_score(score)
     return SellAdvice(
@@ -186,7 +175,6 @@ def _technical_risk_advice(
         key_levels=key_levels,
         indicators=indicators,
         patterns=patterns,
-        chan_structure=chan_structure,
         fund_flow=fund_flow,
         divergence=divergence,
     )
@@ -222,7 +210,6 @@ def _apply_fund_flow_sell_risk(
     score: int,
     fund_flow: FundFlowResult | None,
     patterns: PatternResult,
-    chan_structure: ChanStructureResult,
     risks: list[str],
     reasons: list[str],
     observations: list[str],
@@ -235,12 +222,8 @@ def _apply_fund_flow_sell_risk(
         adjustment += 10
     if fund_flow.main_inflow_5d < 0 and patterns.volume_drop_below_ma20:
         adjustment += 15
-    if fund_flow.main_inflow_5d < 0 and chan_structure.risk_signal in {"跌破中枢候选", "顶背驰候选"}:
-        adjustment += 12
     if fund_flow.main_inflow_5d > 0 and patterns.pullback_low_volume:
         adjustment -= 6
-    if fund_flow.main_inflow_5d > 0 and chan_structure.risk_signal == "无":
-        adjustment -= 4
     if adjustment > 0:
         risks.append(f"资金流增加卖出风险：{fund_flow.explanation}")
     elif adjustment < 0:
@@ -254,7 +237,6 @@ def _apply_technical_sell_risks(
     score: int,
     indicators: IndicatorResult,
     patterns: PatternResult,
-    chan_structure: ChanStructureResult,
     risks: list[str],
     reasons: list[str],
     observations: list[str],
@@ -291,20 +273,6 @@ def _apply_technical_sell_risks(
         score += 10
         observations.append("近 20 日涨幅较高，若继续放量滞涨或跌破支撑，应提高止盈优先级。")
 
-    if chan_structure.risk_signal == "跌破中枢候选":
-        score += 20
-        risks.append("缠论结构出现跌破中枢候选，持仓需要防止趋势继续走弱。")
-    elif chan_structure.risk_signal == "顶背驰候选":
-        score += 18
-        risks.append("缠论结构出现顶背驰候选，适合止盈或分批减仓。")
-    elif chan_structure.risk_signal == "下降结构延续":
-        score += 18
-        risks.append("缠论结构显示下降结构延续，不适合继续重仓持有。")
-    elif chan_structure.risk_signal == "高位缩量候选":
-        score += 12
-        risks.append("缠论结构出现高位缩量候选，继续追高和重仓持有风险上升。")
-    else:
-        observations.append("缠论结构暂未给出明确卖出风险，可继续观察关键支撑位。")
     return score
 
 

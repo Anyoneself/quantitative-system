@@ -18,13 +18,25 @@ DEFAULT_KLINE_DAYS = 260
 
 
 def fetch_public_stock_bars(symbol: str, name: str | None = None) -> list[PriceVolumeBar]:
-    market_symbol = _to_sina_symbol(symbol)
+    errors = []
+    for source in _kline_source_order():
+        try:
+            if source == "sina":
+                return _fetch_sina_stock_bars(symbol, name)
+            if source == "tencent":
+                return _fetch_tencent_stock_bars(symbol, name)
+        except DataRefreshError as exc:
+            errors.append(f"{source}：{exc}")
+    raise DataRefreshError("；".join(errors) or f"未能获取 {symbol} 的有效日线数据")
+
+
+def _fetch_sina_stock_bars(symbol: str, stock_name: str | None) -> list[PriceVolumeBar]:
+    market_symbol = _to_market_symbol(symbol)
     url = _sina_kline_url(market_symbol)
     payload = _fetch_json(url, "https://finance.sina.com.cn/")
     if not isinstance(payload, list):
         raise DataRefreshError(f"新浪未返回 {symbol} 的有效日线数据")
 
-    stock_name = name or find_public_stock_name(symbol)
     bars = []
     for item in payload:
         try:
@@ -32,7 +44,7 @@ def fetch_public_stock_bars(symbol: str, name: str | None = None) -> list[PriceV
             volume = float(item["volume"])
             bars.append(
                 PriceVolumeBar(
-                    name=stock_name,
+                    name=stock_name or "未知",
                     trade_date=datetime.strptime(item["day"], "%Y-%m-%d").date(),
                     open=float(item["open"]),
                     high=float(item["high"]),
@@ -48,6 +60,46 @@ def fetch_public_stock_bars(symbol: str, name: str | None = None) -> list[PriceV
     if not bars:
         raise DataRefreshError(f"新浪未返回 {symbol} 的有效日线数据")
     return bars
+
+
+def _fetch_tencent_stock_bars(symbol: str, stock_name: str | None) -> list[PriceVolumeBar]:
+    market_symbol = _to_market_symbol(symbol)
+    payload = _fetch_json(_tencent_kline_url(market_symbol), "https://gu.qq.com/")
+    data = payload.get("data", {}).get(market_symbol) if isinstance(payload, dict) else None
+    rows = data.get("qfqday") or data.get("day") if isinstance(data, dict) else None
+    if not rows:
+        raise DataRefreshError(f"腾讯未返回 {symbol} 的有效日线数据")
+
+    resolved_name = stock_name or _tencent_stock_name(data, market_symbol)
+    bars = []
+    for row in rows:
+        try:
+            close = float(row[2])
+            volume = float(row[5])
+            bars.append(
+                PriceVolumeBar(
+                    name=resolved_name,
+                    trade_date=datetime.strptime(row[0], "%Y-%m-%d").date(),
+                    open=float(row[1]),
+                    high=float(row[3]),
+                    low=float(row[4]),
+                    close=close,
+                    volume=volume,
+                    amount=close * volume,
+                )
+            )
+        except (IndexError, TypeError, ValueError) as exc:
+            raise DataRefreshError(f"腾讯日线数据格式不符合预期：{exc}") from exc
+    if not bars:
+        raise DataRefreshError(f"腾讯未返回 {symbol} 的有效日线数据")
+    return bars
+
+
+def _tencent_stock_name(data: dict, market_symbol: str) -> str:
+    quote = data.get("qt", {}).get(market_symbol) if isinstance(data.get("qt"), dict) else None
+    if isinstance(quote, list) and len(quote) > 1:
+        return str(quote[1] or "未知")
+    return "未知"
 
 
 def fetch_public_a_stock_symbols() -> list[StockInfo]:
@@ -124,6 +176,12 @@ def _sina_kline_url(market_symbol: str) -> str:
     return f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?{query}"
 
 
+def _tencent_kline_url(market_symbol: str) -> str:
+    days = int(os.getenv("PUBLIC_KLINE_DAYS", str(DEFAULT_KLINE_DAYS)))
+    query = urlencode({"param": f"{market_symbol},day,,,{days},qfq"})
+    return f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?{query}"
+
+
 def _fetch_sina_stock_count() -> int:
     payload = _fetch_json(_sina_stock_count_url(), "https://finance.sina.com.cn/")
     try:
@@ -151,10 +209,17 @@ def _sina_stock_list_url(page: int, page_size: int) -> str:
     return f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?{query}"
 
 
-def _to_sina_symbol(symbol: str) -> str:
+def _to_market_symbol(symbol: str) -> str:
     if symbol.startswith(("5", "6", "9")):
         return f"sh{symbol}"
     return f"sz{symbol}"
+
+
+def _kline_source_order() -> list[str]:
+    source = os.getenv("PUBLIC_KLINE_SOURCE", "tencent").strip().lower()
+    if source == "sina":
+        return ["sina", "tencent"]
+    return ["tencent", "sina"]
 
 
 def _request_timeout() -> float:

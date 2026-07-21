@@ -81,7 +81,7 @@ def analyze_divergence(
     if near_new_low and weave_state["ma5_ma10_late_bearish_weaving"]:
         bullish_score += 4
         bullish_confidence += 10
-        bullish_reasons.append("空头排列末端出现多次 MA5/MA10 缠绕，下跌转折概率提高。")
+        bullish_reasons.append("空头排列末端出现多次 MA5/MA10 反复交叉，下跌转折概率提高。")
 
     near_new_high = prior_range_ratio >= 0.05 and current_close >= prior_high * 0.99
     if near_new_high and current_histogram < prior_high_histogram:
@@ -103,7 +103,7 @@ def analyze_divergence(
     if near_new_high and weave_state["ma5_above_ma10"] and weave_state["ma5_ma10_weaving_count"] >= 3:
         bearish_risk += 4
         bearish_confidence += 10
-        bearish_reasons.append("多头排列后出现多次 MA5/MA10 缠绕，上涨中继概率下降。")
+        bearish_reasons.append("多头排列后出现多次 MA5/MA10 反复交叉，上涨中继概率下降。")
 
     bullish_score = max(0, min(20, bullish_score))
     bearish_risk = max(0, min(25, bearish_risk))

@@ -3,21 +3,22 @@ from __future__ import annotations
 import unittest
 import threading
 from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from analysis.chan_theory import analyze_chan_structure
 from analysis.advisor import generate_advice
 from analysis.divergence import analyze_divergence
 from analysis.fund_flow import analyze_fund_flow
 from analysis.indicators import calculate_indicators
 from analysis.market_scanner import MarketScanner
 from analysis.ml_model import predict_next_day_buy_probability
-from analysis.scanner import ScanResult, format_scan_report, scan_top_stocks
+from analysis.scanner import ScanResult, format_entry_signal_report, format_scan_report, scan_entry_signals, scan_top_stocks
 from analysis.service import build_advice
 from analysis.sell_advisor import build_sell_advice
 from analysis.patterns import detect_patterns
 from data.errors import DataRefreshError
 from data.models import FundFlowBar, PriceVolumeBar, StockInfo
+from data.public_sources import fetch_public_stock_bars
 from output.formatter import format_advice
 
 
@@ -41,6 +42,29 @@ class AdvisorTest(unittest.TestCase):
         self.assertIn("数据证据：", format_advice(advice))
         self.assertTrue(advice.evidence)
 
+    def test_tencent_kline_payload_parses_price_volume_bars(self) -> None:
+        payload = {
+            "data": {
+                "sh600519": {
+                    "qt": {"sh600519": ["1", "贵州茅台", "600519"]},
+                    "qfqday": [
+                        ["2026-07-07", "100.00", "102.00", "103.00", "99.00", "12345.00"],
+                        ["2026-07-08", "102.00", "101.00", "104.00", "100.00", "23456.00"],
+                    ]
+                }
+            }
+        }
+
+        with patch("data.public_sources._fetch_json", return_value=payload):
+            with patch("data.public_sources._kline_source_order", return_value=["tencent"]):
+                bars = fetch_public_stock_bars("600519")
+
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(bars[-1].name, "贵州茅台")
+        self.assertEqual(bars[-1].trade_date.isoformat(), "2026-07-08")
+        self.assertEqual(bars[-1].close, 101)
+        self.assertEqual(bars[-1].volume, 23456)
+
     def test_ml_prediction_returns_probability(self) -> None:
         bars = _build_bars_for_limit_up()
 
@@ -60,26 +84,6 @@ class AdvisorTest(unittest.TestCase):
         self.assertIsNotNone(prediction)
         self.assertEqual(prediction.sample_count, 229)
         self.assertEqual(prediction.neighbor_count, 15)
-
-    def test_chan_structure_detects_points_strokes_and_center(self) -> None:
-        bars = _build_chan_bars()
-
-        result = analyze_chan_structure(bars)
-
-        self.assertGreaterEqual(len(result.points), 4)
-        self.assertGreaterEqual(len(result.strokes), 3)
-        self.assertIsNotNone(result.center)
-        self.assertIn(result.buy_signal, {"二买候选", "三买候选", "无"})
-        self.assertTrue(result.recommendation)
-
-    def test_build_advice_includes_chan_structure(self) -> None:
-        bars = _build_bars(250)
-
-        advice = build_advice("600519", bars, "knn")
-
-        self.assertIsNotNone(advice.chan_structure)
-        self.assertTrue(any("缠论结构" in item for item in advice.evidence))
-        self.assertIn("缠论结构辅助", format_advice(advice))
 
     def test_yearline_below_adds_risk_and_score_penalty(self) -> None:
         bars = _build_yearline_bars(last_close=9.0, last_volume=900)
@@ -298,7 +302,6 @@ class AdvisorTest(unittest.TestCase):
                 indicators=advice.indicators,
                 patterns=advice.patterns,
                 ml_prediction=advice.ml_prediction,
-                chan_structure=advice.chan_structure,
             )
 
         results = scan_top_stocks(
@@ -312,6 +315,27 @@ class AdvisorTest(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].symbol, "600519")
         self.assertIn("Top 推荐股票", format_scan_report(results))
+
+    def test_entry_scan_keeps_bullish_divergence_with_low_amount(self) -> None:
+        def fake_analyzer(symbol, algorithm):
+            bullish = symbol != "000003"
+            amount = 20_000_000 if symbol != "000002" else 45_000_000
+            return _build_entry_scan_advice(symbol, bullish=bullish, amount=amount)
+
+        results = scan_entry_signals(
+            symbols=["000001", "000002", "000003"],
+            algorithm="knn",
+            top_n=10,
+            max_amount=50_000_000,
+            max_amount_ratio=0.8,
+            min_confidence=40,
+            analyzer=fake_analyzer,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].symbol, "000001")
+        self.assertEqual(results[0].amount_ratio_20d, 0.5)
+        self.assertIn("底背离低成交额候选", format_entry_signal_report(results))
 
     def test_market_scanner_keeps_top_10_without_min_score(self) -> None:
         stocks = [
@@ -446,28 +470,6 @@ def _build_bars(count: int):
                 low=close - 0.08,
                 close=close,
                 volume=1000 + index * 3,
-                amount=80_000_000,
-            )
-        )
-    return bars
-
-
-def _build_chan_bars():
-    from datetime import date, timedelta
-
-    closes = [10, 11, 12, 11, 10, 11, 12.2, 11.1, 10.4, 11.4, 12.6, 11.6, 10.8, 11.9, 13.0, 12.4, 12.1, 12.8]
-    bars = []
-    start = date(2026, 1, 1)
-    for index, close in enumerate(closes):
-        bars.append(
-            PriceVolumeBar(
-                name="测试股票",
-                trade_date=start + timedelta(days=index),
-                open=close - 0.08,
-                high=close + 0.22,
-                low=close - 0.22,
-                close=close,
-                volume=1000 + index * 20,
                 amount=80_000_000,
             )
         )
@@ -685,6 +687,26 @@ def _build_no_divergence_bars():
             )
         )
     return bars
+
+
+def _build_entry_scan_advice(symbol: str, bullish: bool, amount: float):
+    return SimpleNamespace(
+        action="WATCH",
+        score=64,
+        risks=["短期趋势仍需确认。"],
+        indicators=SimpleNamespace(
+            name=f"股票{symbol}",
+            amount=amount,
+            amount_ma20=40_000_000,
+        ),
+        ml_prediction=SimpleNamespace(buy_probability=0.62),
+        divergence=SimpleNamespace(
+            bullish_divergence=bullish,
+            signal="下跌背驰候选" if bullish else "无明显背驰",
+            confidence=55,
+            reasons=["价格接近近 30 日低点，但 MACD 柱没有同步创新低。"],
+        ),
+    )
 
 if __name__ == "__main__":
     unittest.main()

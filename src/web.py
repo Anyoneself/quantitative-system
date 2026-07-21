@@ -63,6 +63,12 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
     def handle_one_request(self) -> None:
         try:
             super().handle_one_request()
@@ -117,7 +123,6 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
                     "ok": True,
                     "advice": advice_to_dict(advice),
                     "chart": _chart_payload(chart_bars),
-                    "chan": advice.chan_structure.to_dict() if advice.chan_structure else None,
                     "fund_flow": asdict(advice.fund_flow) if advice.fund_flow else None,
                     "divergence": asdict(advice.divergence) if advice.divergence else None,
                     "beginner": _beginner_payload(advice),

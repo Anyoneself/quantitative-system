@@ -4,9 +4,13 @@ import argparse
 import sys
 from pathlib import Path
 
+from backtest.engine import BacktestConfig, run_backtest
+from backtest.formatter import format_backtest_result
 from analysis.ml_model import ALGORITHMS
-from analysis.scanner import load_symbols_from_file, parse_symbols, run_scan_loop
+from analysis.scanner import load_symbols_from_file, parse_symbols, run_entry_signal_loop, run_scan_loop
 from analysis.service import analyze_stock, analyze_stock_sell
+from data.errors import DataRefreshError
+from data.source import fetch_bars
 from output.formatter import format_advice, format_sell_advice
 
 
@@ -18,8 +22,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_advise(args)
     if args.command == "scan":
         return _run_scan(args)
+    if args.command == "entry-scan":
+        return _run_entry_scan(args)
     if args.command == "sell":
         return _run_sell(args)
+    if args.command == "backtest":
+        return _run_backtest(args)
 
     parser.print_help()
     return 1
@@ -50,6 +58,30 @@ def _build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--min-score", type=int, default=52, help="最低机器学习评分，默认 52")
     scan_parser.add_argument("--interval", type=int, default=600, help="扫描间隔秒数，默认 600")
     scan_parser.add_argument("--once", action="store_true", help="只扫描一次，不循环")
+
+    entry_scan_parser = subparsers.add_parser("entry-scan", help="扫描底背离且成交额较低的入场候选")
+    entry_scan_parser.add_argument("--symbols", help="逗号分隔的股票代码，例如 601988,600519")
+    entry_scan_parser.add_argument("--pool-file", help="股票池文件，每行一个股票代码")
+    entry_scan_parser.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="robust_ensemble", help="机器学习算法")
+    entry_scan_parser.add_argument("--top", type=int, default=10, help="输出前 N 只股票，默认 10")
+    entry_scan_parser.add_argument("--max-amount", type=float, default=50_000_000, help="当日成交额上限，默认 50000000；设置为 0 表示不限制")
+    entry_scan_parser.add_argument("--max-amount-ratio", type=float, default=0.8, help="当日成交额 / 20 日均成交额上限，默认 0.8")
+    entry_scan_parser.add_argument("--min-confidence", type=int, default=40, help="底背离最低置信度，默认 40")
+    entry_scan_parser.add_argument("--interval", type=int, default=600, help="扫描间隔秒数，默认 600")
+    entry_scan_parser.add_argument("--once", action="store_true", help="只扫描一次，不循环")
+
+    backtest_parser = subparsers.add_parser("backtest", help="回测单只股票的买卖评分策略")
+    backtest_parser.add_argument("symbol", help="股票代码，例如 600519")
+    backtest_parser.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="robust_ensemble", help="机器学习算法")
+    backtest_parser.add_argument("--initial-cash", type=float, default=100_000, help="初始资金，默认 100000")
+    backtest_parser.add_argument("--buy-score", type=int, default=60, help="买入评分阈值，默认 60")
+    backtest_parser.add_argument("--sell-risk", type=int, default=45, help="卖出风险阈值，默认 45")
+    backtest_parser.add_argument("--max-position-rate", type=float, default=0.95, help="最大仓位比例，默认 0.95")
+    backtest_parser.add_argument("--commission-rate", type=float, default=0.0003, help="佣金比例，默认 0.0003")
+    backtest_parser.add_argument("--min-commission", type=float, default=5.0, help="最低佣金，默认 5")
+    backtest_parser.add_argument("--stamp-duty-rate", type=float, default=0.001, help="卖出印花税比例，默认 0.001")
+    backtest_parser.add_argument("--slippage-rate", type=float, default=0.0005, help="滑点比例，默认 0.0005")
+    backtest_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
     return parser
 
 
@@ -103,6 +135,66 @@ def _run_scan(args: argparse.Namespace) -> int:
         interval_seconds=args.interval,
         once=args.once,
     )
+    return 0
+
+
+def _run_entry_scan(args: argparse.Namespace) -> int:
+    symbols = _resolve_symbols(args)
+    if not symbols:
+        print("请通过 --symbols 或 --pool-file 提供股票池。", file=sys.stderr)
+        return 2
+
+    invalid_symbols = [symbol for symbol in symbols if not _normalize_symbol(symbol)]
+    if invalid_symbols:
+        print(f"股票代码格式不正确：{', '.join(invalid_symbols)}", file=sys.stderr)
+        return 2
+    if args.max_amount < 0:
+        print("当日成交额上限不能小于 0。", file=sys.stderr)
+        return 2
+    if args.max_amount_ratio <= 0:
+        print("成交额比例上限必须大于 0。", file=sys.stderr)
+        return 2
+    if args.min_confidence < 0 or args.min_confidence > 100:
+        print("底背离置信度必须在 0 到 100 之间。", file=sys.stderr)
+        return 2
+
+    run_entry_signal_loop(
+        symbols=symbols,
+        algorithm=args.algorithm,
+        top_n=args.top,
+        max_amount=args.max_amount,
+        max_amount_ratio=args.max_amount_ratio,
+        min_confidence=args.min_confidence,
+        interval_seconds=args.interval,
+        once=args.once,
+    )
+    return 0
+
+
+def _run_backtest(args: argparse.Namespace) -> int:
+    symbol = _normalize_symbol(args.symbol)
+    if not symbol:
+        print("股票代码格式不正确，只支持 6 位数字代码。", file=sys.stderr)
+        return 2
+
+    try:
+        config = BacktestConfig(
+            initial_cash=args.initial_cash,
+            buy_score_threshold=args.buy_score,
+            sell_risk_threshold=args.sell_risk,
+            max_position_rate=args.max_position_rate,
+            commission_rate=args.commission_rate,
+            min_commission=args.min_commission,
+            stamp_duty_rate=args.stamp_duty_rate,
+            slippage_rate=args.slippage_rate,
+        )
+        bars = fetch_bars(symbol)
+        result = run_backtest(symbol, bars, args.algorithm, config)
+    except (DataRefreshError, ValueError) as exc:
+        print(f"回测失败：{exc}", file=sys.stderr)
+        return 1
+
+    print(format_backtest_result(result, args.format))
     return 0
 
 

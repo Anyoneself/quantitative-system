@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from analysis.advisor import Advice, generate_advice, make_no_data_advice
-from analysis.chan_theory import analyze_chan_structure
 from analysis.divergence import DivergenceResult, analyze_divergence
 from analysis.fund_flow import FundFlowResult, analyze_fund_flow
 from analysis.indicators import calculate_indicators
@@ -32,10 +31,9 @@ def build_advice(symbol: str, bars: list[PriceVolumeBar], algorithm: str) -> Adv
 
     patterns = detect_patterns(indicators)
     ml_prediction = predict_next_day_buy_probability(bars, algorithm)
-    chan_structure = analyze_chan_structure(bars[-90:])
     fund_flow = _safe_fund_flow(symbol)
     divergence = analyze_divergence(bars, fund_flow)
-    return generate_advice(indicators, patterns, ml_prediction, chan_structure, fund_flow, divergence)
+    return generate_advice(indicators, patterns, ml_prediction, fund_flow, divergence)
 
 
 def analyze_stock_sell(

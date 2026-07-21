@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from analysis.chan_theory import ChanStructureResult
 from analysis.divergence import DivergenceResult
 from analysis.fund_flow import FundFlowResult
 from analysis.indicators import IndicatorResult
@@ -21,7 +20,6 @@ class Advice:
     indicators: IndicatorResult | None
     patterns: PatternResult | None
     ml_prediction: MlPrediction | None
-    chan_structure: ChanStructureResult | None = None
     fund_flow: FundFlowResult | None = None
     divergence: DivergenceResult | None = None
 
@@ -44,7 +42,6 @@ def generate_advice(
     indicators: IndicatorResult,
     patterns: PatternResult,
     ml_prediction: MlPrediction | None,
-    chan_structure: ChanStructureResult | None = None,
     fund_flow: FundFlowResult | None = None,
     divergence: DivergenceResult | None = None,
 ) -> Advice:
@@ -80,20 +77,6 @@ def generate_advice(
             reasons.append("机器学习模型给出较高买入概率，可进入买入观察。")
     else:
         risks.append("历史样本不足，机器学习模型无法形成可靠预测。")
-
-    if chan_structure:
-        score = _clamp_score(score + chan_structure.score_adjustment)
-        evidence.append(
-            f"缠论结构：{chan_structure.trend}，当前位置：{chan_structure.position}，"
-            f"买点候选：{chan_structure.buy_signal}，风险结构：{chan_structure.risk_signal}，"
-            f"结构调整分 {chan_structure.score_adjustment:+d}。"
-        )
-        if chan_structure.score_adjustment > 0:
-            reasons.append(chan_structure.recommendation)
-        elif chan_structure.score_adjustment < 0:
-            risks.append(chan_structure.recommendation)
-        else:
-            observations.append(chan_structure.recommendation)
 
     if fund_flow:
         score = _clamp_score(score + fund_flow.fund_flow_score_adjustment)
@@ -262,7 +245,6 @@ def generate_advice(
         indicators=indicators,
         patterns=patterns,
         ml_prediction=ml_prediction,
-        chan_structure=chan_structure,
         fund_flow=fund_flow,
         divergence=divergence,
     )

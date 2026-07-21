@@ -1,0 +1,5 @@
+"""回测模块。"""
+
+from backtest.engine import BacktestConfig, BacktestResult, run_backtest
+
+__all__ = ["BacktestConfig", "BacktestResult", "run_backtest"]

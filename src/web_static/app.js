@@ -117,7 +117,6 @@ function renderSellAdvice(sellAdvice) {
   if (sellAdvice.key_levels) {
     rows.push(["20 日均线", formatNumber(sellAdvice.key_levels.ma20)]);
     rows.push(["年线 MA250", sellAdvice.key_levels.ma250 > 0 ? formatNumber(sellAdvice.key_levels.ma250) : "数据不足"]);
-    rows.push(["中枢下沿", sellAdvice.key_levels.chan_center_lower !== null ? formatNumber(sellAdvice.key_levels.chan_center_lower) : "未形成"]);
   }
   rows.forEach(([label, value]) => {
     const row = document.createElement("div");
@@ -155,7 +154,6 @@ function renderAdvice(payload) {
   const indicators = advice.indicators;
   const prediction = advice.ml_prediction;
   const beginner = payload.beginner;
-  const chan = payload.chan;
   const fundFlow = payload.fund_flow;
   const divergence = payload.divergence;
 
@@ -182,10 +180,9 @@ function renderAdvice(payload) {
   renderList("#risks", advice.risks);
   renderList("#observations", advice.observations);
   renderMl(prediction);
-  renderChan(chan);
   renderFundFlow(fundFlow);
   renderDivergence(divergence);
-  drawStockChart(payload.chart, chan);
+  drawStockChart(payload.chart);
 }
 
 function renderDivergence(divergence) {
@@ -334,7 +331,6 @@ function renderMarketScan(snapshot) {
     appendCell(row, item.action);
     appendCell(row, String(item.score));
     appendCell(row, formatPercent(item.probability));
-    appendCell(row, item.chan_summary || "--");
     appendCell(row, item.reason);
     appendCell(row, item.risk);
     tbody.appendChild(row);
@@ -398,19 +394,7 @@ function renderMl(prediction) {
   });
 }
 
-function renderChan(chan) {
-  if (!chan) return;
-  document.querySelector("#chan-trend").textContent = chan.trend;
-  document.querySelector("#chan-position").textContent = chan.position;
-  document.querySelector("#chan-buy").textContent = chan.buy_signal;
-  document.querySelector("#chan-risk").textContent = chan.risk_signal;
-  const sign = chan.score_adjustment > 0 ? "+" : "";
-  document.querySelector("#chan-adjustment").textContent = `结构调整 ${sign}${chan.score_adjustment}`;
-  document.querySelector("#chan-recommendation").textContent = chan.recommendation;
-  document.querySelector("#chan-explanation").textContent = chan.explanation;
-}
-
-function drawStockChart(chart, chan) {
+function drawStockChart(chart) {
   const canvas = document.querySelector("#stock-chart");
   const ctx = canvas.getContext("2d");
   const width = canvas.width;
@@ -422,9 +406,8 @@ function drawStockChart(chart, chan) {
   const highs = chart.highs || closes;
   const lows = chart.lows || closes;
   const volumes = chart.volumes;
-  const centerPrices = chan && chan.center ? [chan.center.lower, chan.center.upper] : [];
-  const minPrice = Math.min(...lows, ...centerPrices);
-  const maxPrice = Math.max(...highs, ...centerPrices);
+  const minPrice = Math.min(...lows);
+  const maxPrice = Math.max(...highs);
   const maxVolume = Math.max(...volumes);
   const pad = 34;
   const chartHeight = height * 0.68;
@@ -432,10 +415,7 @@ function drawStockChart(chart, chan) {
   const volumeHeight = height - volumeTop - 20;
 
   drawGrid(ctx, width, height, pad);
-  drawChanCenter(ctx, chan, closes.length, minPrice, maxPrice, width, chartHeight, pad);
   drawCandles(ctx, opens, highs, lows, closes, minPrice, maxPrice, width, chartHeight, pad);
-  drawChanStrokes(ctx, chan, closes.length, minPrice, maxPrice, width, chartHeight, pad);
-  drawChanPoints(ctx, chan, closes.length, minPrice, maxPrice, width, chartHeight, pad);
 
   const barWidth = (width - pad * 2) / volumes.length * 0.55;
   volumes.forEach((value, index) => {
@@ -473,51 +453,6 @@ function drawCandles(ctx, opens, highs, lows, closes, minPrice, maxPrice, width,
     const bodyHeight = Math.max(2, Math.abs(closeY - openY));
     ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
     ctx.strokeRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
-  });
-}
-
-function drawChanCenter(ctx, chan, pointCount, minClose, maxClose, width, chartHeight, pad) {
-  if (!chan || !chan.center) return;
-  const center = chan.center;
-  const startX = xForIndex(center.start_index, width, pad, pointCount);
-  const endX = xForIndex(center.end_index, width, pad, pointCount);
-  const upperY = yForPrice(center.upper, minClose, maxClose, chartHeight, pad);
-  const lowerY = yForPrice(center.lower, minClose, maxClose, chartHeight, pad);
-  ctx.fillStyle = "rgba(119, 213, 255, 0.12)";
-  ctx.fillRect(startX, upperY, Math.max(8, endX - startX), lowerY - upperY);
-  ctx.strokeStyle = "rgba(119, 213, 255, 0.64)";
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(startX, upperY, Math.max(8, endX - startX), lowerY - upperY);
-}
-
-function drawChanStrokes(ctx, chan, pointCount, minClose, maxClose, width, chartHeight, pad) {
-  if (!chan || !chan.strokes) return;
-  ctx.lineWidth = 2;
-  chan.strokes.forEach((stroke) => {
-    const startX = xForIndex(stroke.start_index, width, pad, pointCount);
-    const endX = xForIndex(stroke.end_index, width, pad, pointCount);
-    const startY = yForPrice(stroke.start_price, minClose, maxClose, chartHeight, pad);
-    const endY = yForPrice(stroke.end_price, minClose, maxClose, chartHeight, pad);
-    ctx.strokeStyle = stroke.direction === "up" ? "rgba(88, 214, 166, 0.92)" : "rgba(255, 125, 125, 0.88)";
-    ctx.beginPath();
-    ctx.moveTo(startX, startY);
-    ctx.lineTo(endX, endY);
-    ctx.stroke();
-  });
-}
-
-function drawChanPoints(ctx, chan, pointCount, minClose, maxClose, width, chartHeight, pad) {
-  if (!chan || !chan.points) return;
-  chan.points.forEach((point) => {
-    const x = xForIndex(point.index, width, pad, pointCount);
-    const y = yForPrice(point.price, minClose, maxClose, chartHeight, pad);
-    ctx.fillStyle = point.kind === "top" ? "#ff7185" : "#77d5ff";
-    ctx.beginPath();
-    ctx.arc(x, y, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "rgba(237, 243, 239, 0.82)";
-    ctx.font = "14px sans-serif";
-    ctx.fillText(point.kind === "top" ? "顶" : "底", x + 7, y - 7);
   });
 }
 
@@ -578,7 +513,7 @@ function setupPointerEffects() {
     document.documentElement.style.setProperty("--pointer-y", y);
   });
 
-  document.querySelectorAll("button, .score-card, .detail-card, .chart-card, .chan-panel").forEach((node) => {
+  document.querySelectorAll("button, .score-card, .detail-card, .chart-card, .metric-panel").forEach((node) => {
     node.addEventListener("pointermove", (event) => {
       const rect = node.getBoundingClientRect();
       const offsetX = (event.clientX - rect.left - rect.width / 2) / rect.width;

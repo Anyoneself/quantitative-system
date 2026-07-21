@@ -57,10 +57,6 @@ def _format_text(advice: Advice) -> str:
         lines.extend(["", "机器学习预测："])
         lines.extend(_ml_lines(advice.ml_prediction))
 
-    if advice.chan_structure:
-        lines.extend(["", "缠论结构辅助："])
-        lines.extend(_chan_lines(advice.chan_structure))
-
     if advice.fund_flow:
         lines.extend(["", "资金流向："])
         lines.extend(_fund_flow_lines(advice.fund_flow))
@@ -103,7 +99,6 @@ def _format_sell_text(advice: SellAdvice) -> str:
                 f"- 当前收盘价：{advice.key_levels.close:.2f}",
                 f"- 20 日均线：{advice.key_levels.ma20:.2f}",
                 f"- 年线 MA250：{advice.key_levels.ma250:.2f}" if advice.key_levels.ma250 > 0 else "- 年线 MA250：数据不足",
-                f"- 中枢下沿：{advice.key_levels.chan_center_lower:.2f}" if advice.key_levels.chan_center_lower is not None else "- 中枢下沿：未形成",
                 f"- 近 20 日最高收盘价：{advice.key_levels.recent_high_close:.2f}",
             ]
         )
@@ -162,20 +157,6 @@ def _ml_lines(prediction) -> list[str]:
     return lines
 
 
-def _chan_lines(chan_structure) -> list[str]:
-    lines = [
-        f"- 结构状态：{chan_structure.trend}",
-        f"- 当前位置：{chan_structure.position}",
-        f"- 买点候选：{chan_structure.buy_signal}",
-        f"- 风险结构：{chan_structure.risk_signal}",
-        f"- 结构调整分：{chan_structure.score_adjustment:+d}",
-        f"- 结构建议：{chan_structure.recommendation}",
-    ]
-    if chan_structure.center:
-        lines.append(f"- 最近中枢：{chan_structure.center.lower:.2f} - {chan_structure.center.upper:.2f}")
-    return lines
-
-
 def _fund_flow_lines(fund_flow) -> list[str]:
     return [
         f"- 信号：{fund_flow.signal}",
@@ -195,7 +176,7 @@ def _divergence_lines(divergence) -> list[str]:
         f"- 置信度：{divergence.confidence}",
         f"- 买入评分调整：{divergence.bullish_score_adjustment:+d}",
         f"- 卖出风险调整：{divergence.bearish_risk_adjustment:+d}",
-        f"- MA5/MA10 缠绕次数：{divergence.ma5_ma10_weaving_count}",
+        f"- MA5/MA10 反复交叉次数：{divergence.ma5_ma10_weaving_count}",
         f"- 依据：{'；'.join(divergence.reasons)}",
     ]
 
