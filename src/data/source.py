@@ -3,10 +3,20 @@ from __future__ import annotations
 from data.fund_flow import fetch_public_fund_flow_bars
 from data.models import FundFlowBar, PriceVolumeBar
 from data.public_sources import fetch_public_stock_bars, iter_public_a_stock_symbols
+from data.quality import validate_price_bars
 
 
 def fetch_bars(symbol: str, name: str | None = None) -> list[PriceVolumeBar]:
-    return fetch_public_stock_bars(symbol, name)
+    bars = fetch_public_stock_bars(symbol, name)
+    return validate_price_bars(bars)
+
+
+def fetch_unadjusted_bars(
+    symbol: str,
+    name: str | None = None,
+) -> list[PriceVolumeBar]:
+    bars = fetch_public_stock_bars(symbol, name, adjustment_type="none")
+    return validate_price_bars(bars)
 
 
 def fetch_fund_flow_bars(symbol: str, limit: int = 20) -> list[FundFlowBar]:

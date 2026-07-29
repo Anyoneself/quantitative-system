@@ -3,323 +3,805 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>量价机器学习决策台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260630-premium" />
+    <meta
+      name="description"
+      content="QuantLab 是一个面向 A 股的本地量化分析、策略回测与风险观察工具。"
+    />
+    <title>QuantLab · 量化投资工作台</title>
+    <link rel="stylesheet" href="/styles.css?v=20260729-release-gate" />
   </head>
   <body>
-    <main class="shell">
-      <section class="workspace">
-        <aside class="control-panel">
-          <div class="brand">
-            <div class="brand-mark">Q</div>
-            <div>
-              <h1>量价决策台</h1>
-              <p>公开行情数据 · 机器学习预测</p>
-            </div>
-          </div>
-
-          <div class="mode-tabs" role="tablist" aria-label="功能切换">
-            <button id="single-tab" class="mode-tab active" type="button">单股分析</button>
-            <button id="scan-tab" class="mode-tab" type="button">全 A 扫描</button>
-          </div>
-
-          <form id="advisor-form" class="form mode-form">
-            <div class="field-grid">
-              <label>
-                <span>股票代码</span>
-                <input id="symbol" inputmode="numeric" maxlength="6" placeholder="601988" />
-              </label>
-
-              <label>
-                <span>机器学习算法</span>
-                <select id="algorithm">
-                  <option value="robust_ensemble">稳健集成模型（5日）</option>
-                  <option value="time_decay_knn">时间衰减 KNN（5日）</option>
-                  <option value="knn">KNN 相似样本</option>
-                  <option value="weighted_knn">加权 KNN</option>
-                  <option value="logistic_regression">逻辑回归</option>
-                </select>
-              </label>
-
-              <label>
-                <span>持仓成本价（可选，用于卖出判断）</span>
-                <input id="cost-price" inputmode="decimal" placeholder="5.20" />
-              </label>
-
-              <label>
-                <span>持仓数量（可选）</span>
-                <input id="quantity" inputmode="decimal" placeholder="1000" />
-              </label>
-
-              <label>
-                <span>最大亏损比例</span>
-                <input id="max-loss-rate" inputmode="decimal" value="0.08" />
-              </label>
-
-              <label>
-                <span>目标止盈比例</span>
-                <input id="target-profit-rate" inputmode="decimal" value="0.20" />
-              </label>
-            </div>
-
-            <button id="submit-button" type="submit">
-              <span class="button-light"></span>
-              开始分析
-            </button>
-          </form>
-
-          <form id="scan-form" class="form mode-form hidden">
-            <div class="field-grid">
-              <label>
-                <span>机器学习算法</span>
-                <select id="scan-algorithm">
-                  <option value="robust_ensemble">稳健集成模型（5日）</option>
-                  <option value="time_decay_knn">时间衰减 KNN（5日）</option>
-                  <option value="knn">KNN 相似样本</option>
-                  <option value="weighted_knn">加权 KNN</option>
-                  <option value="logistic_regression">逻辑回归</option>
-                </select>
-              </label>
-
-            </div>
-
-            <div class="scan-actions">
-              <button id="scan-once-button" type="submit">
-                <span class="button-light"></span>
-                启动全 A 扫描
-              </button>
-              <button id="scan-auto-button" class="secondary-button" type="button">停止扫描</button>
-            </div>
-          </form>
-
-          <div class="mini-note">
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
             <span></span>
-            使用免登录公开行情数据。
+            <span></span>
           </div>
-        </aside>
+          <div class="brand-copy">
+            <strong>QuantLab</strong>
+            <small>量化投资工作台</small>
+          </div>
+          <button class="mobile-close" id="mobile-close" type="button" aria-label="关闭导航">×</button>
+        </div>
 
-        <section class="result-panel">
-          <div id="empty-state" class="empty-state">
+        <nav class="primary-nav" aria-label="主导航">
+          <button class="nav-item active" type="button" data-page="overview">
+            <span class="nav-icon" aria-hidden="true">⌂</span>
+            <span>总览</span>
+          </button>
+          <button class="nav-item" type="button" data-page="market">
+            <span class="nav-icon" aria-hidden="true">⌁</span>
+            <span>行情中心</span>
+          </button>
+          <button class="nav-item" type="button" data-page="research">
+            <span class="nav-icon" aria-hidden="true">⌬</span>
+            <span>策略研究</span>
+          </button>
+          <button class="nav-item" type="button" data-page="backtest">
+            <span class="nav-icon" aria-hidden="true">◷</span>
+            <span>回测分析</span>
+          </button>
+          <button class="nav-item" type="button" data-page="portfolios">
+            <span class="nav-icon" aria-hidden="true">▣</span>
+            <span>组合管理</span>
+          </button>
+          <button class="nav-item" type="button" data-page="risk">
+            <span class="nav-icon" aria-hidden="true">◇</span>
+            <span>风险监控</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <button class="nav-item planned" type="button" data-feature="系统设置">
+            <span class="nav-icon" aria-hidden="true">⚙</span>
+            <span>系统设置</span>
+          </button>
+          <div class="data-source-note">
+            <span class="status-dot"></span>
             <div>
-              <p class="eyebrow">READY</p>
-                <h2>输入股票代码后查看买入评分和卖出评分</h2>
-              <p>也可以切换到全 A 扫描，手动启动一轮 Top 10 筛选。</p>
+              <strong>公开行情数据</strong>
+              <small>免登录数据源</small>
             </div>
           </div>
+          <p>辅助分析工具，不连接券商账户，不自动下单。</p>
+        </div>
+      </aside>
 
-          <div id="loading-state" class="loading-state hidden">
-            <div class="loader"></div>
-            <p>正在抓取行情数据并训练模型...</p>
+      <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+      <div class="app-main">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="menu-button" id="menu-button" type="button" aria-label="打开导航">☰</button>
+            <form class="global-search" id="global-search">
+              <span aria-hidden="true">⌕</span>
+              <input
+                id="global-symbol"
+                type="search"
+                inputmode="numeric"
+                maxlength="6"
+                autocomplete="off"
+                aria-label="搜索股票代码"
+                placeholder="搜索股票代码，如 600519"
+              />
+              <kbd>Enter</kbd>
+            </form>
           </div>
+          <div class="topbar-meta">
+            <div class="refresh-meta">
+              <span>数据更新时间</span>
+              <strong id="global-update-time">尚未更新</strong>
+            </div>
+            <button class="icon-button" id="refresh-button" type="button" aria-label="刷新当前页面">↻</button>
+            <div class="topbar-separator"></div>
+            <div class="profile">
+              <div class="avatar">Q</div>
+              <div>
+                <strong>本地工作台</strong>
+                <small>单用户模式</small>
+              </div>
+            </div>
+          </div>
+        </header>
 
-          <div id="error-state" class="error-state hidden"></div>
-
-          <article id="scan-view" class="scan-view hidden">
-            <header class="advice-header">
+        <main class="content">
+          <section class="page active" id="overview-page" data-page-panel="overview">
+            <header class="page-heading">
               <div>
-                <p class="eyebrow" id="scan-meta">MARKET SCAN</p>
-                <h2>全 A Top 10 买入观察池</h2>
-              </div>
-              <div class="score-card">
-                <span>当前入榜</span>
-                <strong id="scan-count">0</strong>
-              </div>
-            </header>
-
-            <section class="scan-summary">
-              <div>
-                <span>读取股票数</span>
-                <strong id="scan-fetched">0</strong>
-              </div>
-              <div>
-                <span>扫描股票数</span>
-                <strong><span id="scan-finished">0</span>/<span id="scan-total">--</span></strong>
-              </div>
-              <div>
-                <span>剔除数量</span>
-                <strong id="scan-skipped">0</strong>
-              </div>
-              <div>
-                <span>失败数量</span>
-                <strong id="scan-failed">0</strong>
-              </div>
-              <div>
-                <span>刷新状态</span>
-                <strong id="scan-refresh-status">待启动</strong>
-              </div>
-            </section>
-
-            <section class="metric-panel divergence-panel">
-              <div class="section-title">
-                <h3>背驰信号</h3>
-                <span id="divergence-adjustment">--</span>
-              </div>
-              <div class="metric-summary">
-                <div>
-                  <span>类型</span>
-                  <strong id="divergence-signal">--</strong>
-                </div>
-                <div>
-                  <span>置信度</span>
-                  <strong id="divergence-confidence">--</strong>
-                </div>
-                <div>
-                  <span>买入调整</span>
-                  <strong id="divergence-buy">--</strong>
-                </div>
-                <div>
-                  <span>卖出风险</span>
-                  <strong id="divergence-sell">--</strong>
-                </div>
-              </div>
-              <div class="metric-note">
-                <p id="divergence-explanation">背驰样本不足或暂未发现明显背驰。</p>
-              </div>
-            </section>
-
-            <section class="scan-table-wrap">
-              <table class="scan-table">
-                <thead>
-                  <tr>
-                    <th>排名</th>
-                    <th>股票</th>
-                    <th>建议</th>
-                    <th>评分</th>
-                      <th>历史达标</th>
-                    <th>核心理由</th>
-                    <th>风险</th>
-                  </tr>
-                </thead>
-                <tbody id="scan-results"></tbody>
-              </table>
-              <div id="scan-empty" class="scan-empty hidden">正在等待第一只股票完成分析。</div>
-            </section>
-          </article>
-
-          <article id="advice-view" class="advice-view hidden">
-            <header class="advice-header">
-              <div>
-                <p class="eyebrow stock-meta" id="stock-meta">
-                  <span id="stock-code">--</span>
-                  <span id="stock-name">--</span>
-                  <span id="stock-date">--</span>
-                  <a id="stock-link" href="#" target="_blank" rel="noreferrer">同花顺</a>
+                <p class="eyebrow">PORTFOLIO OVERVIEW</p>
+                <h1>量化投资总览</h1>
+                <p class="page-subtitle">
+                  <span id="trade-date">--</span>
+                  <span class="separator-dot"></span>
+                  <span class="market-state"><i></i> 本地分析服务</span>
                 </p>
-                <h2 id="headline">--</h2>
               </div>
-              <div class="score-pair">
-                <div class="score-card buy-score-card">
-                  <span>适合买入评分</span>
-                  <strong id="score">--</strong>
-                  <small id="buy-action-label">--</small>
+              <button class="primary-button" id="go-market-button" type="button">
+                <span>＋</span>
+                分析一只股票
+              </button>
+            </header>
+
+            <section class="metric-grid" aria-label="组合核心指标">
+              <article class="metric-card">
+                <div>
+                  <span class="metric-label">总资产</span>
+                  <strong id="total-assets">--</strong>
+                  <p id="total-assets-note">等待组合数据接入</p>
                 </div>
-                <div class="score-card sell-score-card">
-                  <span>适合卖出评分</span>
-                  <strong id="sell-score">--</strong>
-                  <small id="sell-action-label">--</small>
+                <div class="metric-icon blue" aria-hidden="true">▰</div>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <span class="metric-label">今日收益</span>
+                  <strong id="daily-profit">--</strong>
+                  <p id="daily-profit-note">暂无有效净值</p>
                 </div>
+                <div class="metric-icon green" aria-hidden="true">⌁</div>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <span class="metric-label">累计收益率</span>
+                  <strong id="total-return">--</strong>
+                  <p id="total-return-note">暂无组合收益记录</p>
+                </div>
+                <div class="metric-icon cyan" aria-hidden="true">◔</div>
+              </article>
+              <article class="metric-card">
+                <div>
+                  <span class="metric-label">最大回撤</span>
+                  <strong id="max-drawdown">--</strong>
+                  <p id="max-drawdown-note">净值样本不足</p>
+                </div>
+                <div class="metric-icon violet" aria-hidden="true">◇</div>
+              </article>
+            </section>
+
+            <section class="overview-grid">
+              <article class="panel equity-panel">
+                <header class="panel-header">
+                  <div>
+                    <div class="panel-title-row">
+                      <h2>组合净值曲线</h2>
+                      <span class="info-tip" title="组合净值与基准指数归一化后对比">i</span>
+                    </div>
+                    <div class="chart-legend">
+                      <span><i class="legend-line strategy"></i>策略净值</span>
+                      <span><i class="legend-line benchmark"></i><span id="equity-benchmark-label">比较基准</span></span>
+                    </div>
+                  </div>
+                  <div class="range-tabs" role="tablist" aria-label="净值时间范围">
+                    <button type="button" data-range="1m">1月</button>
+                    <button type="button" data-range="3m">3月</button>
+                    <button class="active" type="button" data-range="ytd">今年</button>
+                    <button type="button" data-range="1y">1年</button>
+                  </div>
+                </header>
+                <div class="chart-frame">
+                  <canvas id="equity-chart" aria-label="组合净值曲线"></canvas>
+                  <div class="chart-empty" id="equity-empty">
+                    <div class="empty-illustration" aria-hidden="true">
+                      <span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                    <strong>暂无组合净值</strong>
+                    <p id="equity-empty-message">创建组合并录入交易后，这里会显示净值与比较基准。</p>
+                  </div>
+                </div>
+              </article>
+
+              <article class="panel risk-panel" id="risk-panel">
+                <header class="panel-header">
+                  <div class="panel-title-row">
+                    <h2>风险指标</h2>
+                    <span class="info-tip" title="风险指标由组合历史净值计算">i</span>
+                  </div>
+                  <span class="panel-status muted" id="risk-sample-status">样本不足</span>
+                </header>
+                <div class="risk-content">
+                  <div class="radar-placeholder" id="risk-radar" aria-label="风险雷达图">
+                    <div class="radar-ring ring-one"></div>
+                    <div class="radar-ring ring-two"></div>
+                    <div class="radar-ring ring-three"></div>
+                    <div class="radar-axis axis-one"></div>
+                    <div class="radar-axis axis-two"></div>
+                    <div class="radar-axis axis-three"></div>
+                    <span class="radar-label top">波动率</span>
+                    <span class="radar-label right-top">夏普比率</span>
+                    <span class="radar-label right-bottom">Beta</span>
+                    <span class="radar-label left-bottom">VaR(95%)</span>
+                    <span class="radar-label left-top">周期胜率</span>
+                    <strong>待计算</strong>
+                  </div>
+                  <dl class="risk-list">
+                    <div><dt>年化波动率</dt><dd id="risk-volatility">--</dd></div>
+                    <div><dt>夏普比率</dt><dd id="risk-sharpe">--</dd></div>
+                    <div><dt>Beta</dt><dd id="risk-beta">--</dd></div>
+                    <div><dt>VaR(95%)</dt><dd id="risk-var">--</dd></div>
+                    <div><dt>完整持仓周期胜率</dt><dd id="risk-win-rate">--</dd></div>
+                    <div><dt>盈亏比</dt><dd id="risk-profit-loss">--</dd></div>
+                  </dl>
+                </div>
+              </article>
+
+              <article class="panel strategy-panel">
+                <header class="panel-header">
+                  <div>
+                    <div class="panel-title-row">
+                      <h2>策略表现</h2>
+                      <span class="info-tip" title="当前展示已实现的分析算法，收益指标等待回测结果入库">i</span>
+                    </div>
+                    <p class="panel-description">当前可用分析模型与运行状态</p>
+                  </div>
+                  <button class="text-button" type="button" data-page="research">查看样本外验证 →</button>
+                </header>
+                <div class="table-scroll">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>策略名称</th>
+                        <th>状态</th>
+                        <th>年化收益</th>
+                        <th>夏普</th>
+                        <th>最大回撤</th>
+                        <th>适用周期</th>
+                      </tr>
+                    </thead>
+                    <tbody id="strategy-table">
+                      <tr class="table-empty-row">
+                        <td colspan="6">暂无已保存的策略结果，请先执行样本外验证或回测。</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+
+              <article class="panel allocation-panel">
+                <header class="panel-header">
+                  <div class="panel-title-row">
+                    <h2>资产配置</h2>
+                    <span class="info-tip" title="根据组合最新持仓市值计算">i</span>
+                  </div>
+                </header>
+                <div class="allocation-content">
+                  <div class="allocation-empty">
+                    <div class="empty-donut">
+                      <span>总资产</span>
+                      <strong>--</strong>
+                    </div>
+                    <p>暂无持仓数据</p>
+                  </div>
+                  <div class="allocation-divider"></div>
+                  <div class="risk-state-card">
+                    <span class="risk-shield" aria-hidden="true">◇</span>
+                    <small>风控状态</small>
+                    <strong id="risk-state">待计算</strong>
+                    <p id="risk-state-note">组合数据接入后自动评估</p>
+                  </div>
+                </div>
+              </article>
+            </section>
+
+            <section class="onboarding-banner" id="onboarding-banner">
+              <div class="onboarding-icon" aria-hidden="true">Q</div>
+              <div>
+                <strong>从真实数据开始建立投资记录</strong>
+                <p>可先创建组合并录入交易，或在策略研究中执行 walk-forward 样本外验证。</p>
+              </div>
+              <button class="secondary-button" id="onboarding-market-button" type="button">前往行情中心</button>
+            </section>
+          </section>
+
+          <section class="page" id="market-page" data-page-panel="market">
+            <header class="page-heading market-heading">
+              <div>
+                <p class="eyebrow">MARKET RESEARCH</p>
+                <h1>行情中心</h1>
+                <p class="page-subtitle">公开行情 · 量价指标 · 机器学习辅助判断</p>
+              </div>
+              <div class="mode-tabs" role="tablist" aria-label="行情功能切换">
+                <button id="single-tab" class="mode-tab active" type="button">单股分析</button>
+                <button id="scan-tab" class="mode-tab" type="button">全 A 扫描</button>
               </div>
             </header>
 
-            <section class="market-strip">
-              <div>
-                <span>收盘价</span>
-                <strong id="close-price">--</strong>
-              </div>
-              <div>
-                <span>1 日涨跌</span>
-                <strong id="return-1d">--</strong>
-              </div>
-              <div>
-                <span>5 日涨跌</span>
-                <strong id="return-5d">--</strong>
-              </div>
-              <div>
-                <span>成交量 / 20 日均量</span>
-                <strong id="volume-ratio">--</strong>
-              </div>
-              <div>
-                <span>年线 MA250</span>
-                <strong id="ma250">--</strong>
-              </div>
-              <div>
-                <span>MACD</span>
-                <strong id="macd-summary">--</strong>
-              </div>
-              <div>
-                <span>首日高点</span>
-                <strong id="first-day-high">--</strong>
-              </div>
+            <section class="market-control panel">
+              <form id="advisor-form" class="market-form">
+                <label class="symbol-field">
+                  <span>股票代码</span>
+                  <input id="symbol" inputmode="numeric" maxlength="6" placeholder="例如 600519" />
+                </label>
+                <label>
+                  <span>分析算法</span>
+                  <select id="algorithm">
+                    <option value="robust_ensemble">稳健集成模型（5日）</option>
+                    <option value="time_decay_knn">时间衰减 KNN（5日）</option>
+                    <option value="knn">KNN 相似样本</option>
+                    <option value="weighted_knn">加权 KNN</option>
+                    <option value="logistic_regression">逻辑回归</option>
+                  </select>
+                </label>
+                <label>
+                  <span>持仓成本价（可选）</span>
+                  <input id="cost-price" inputmode="decimal" placeholder="5.20" />
+                </label>
+                <label>
+                  <span>持仓数量（可选）</span>
+                  <input id="quantity" inputmode="decimal" placeholder="1000" />
+                </label>
+                <details class="advanced-settings">
+                  <summary>风控参数</summary>
+                  <div>
+                    <label>
+                      <span>最大亏损比例</span>
+                      <input id="max-loss-rate" inputmode="decimal" value="0.08" />
+                    </label>
+                    <label>
+                      <span>目标止盈比例</span>
+                      <input id="target-profit-rate" inputmode="decimal" value="0.20" />
+                    </label>
+                  </div>
+                </details>
+                <button id="submit-button" class="primary-button submit-button" type="submit">开始分析</button>
+              </form>
+
+              <form id="scan-form" class="market-form scan-form hidden">
+                <label>
+                  <span>分析算法</span>
+                  <select id="scan-algorithm">
+                    <option value="robust_ensemble">稳健集成模型（5日）</option>
+                    <option value="time_decay_knn">时间衰减 KNN（5日）</option>
+                    <option value="knn">KNN 相似样本</option>
+                    <option value="weighted_knn">加权 KNN</option>
+                    <option value="logistic_regression">逻辑回归</option>
+                  </select>
+                </label>
+                <div class="scan-description">
+                  <strong>全市场 Top 10 观察池</strong>
+                  <p>逐只分析公开 A 股列表，并实时保留当前评分最高的候选股票。</p>
+                </div>
+                <button id="scan-once-button" class="primary-button" type="submit">启动全 A 扫描</button>
+                <button id="scan-auto-button" class="secondary-button" type="button">停止扫描</button>
+              </form>
             </section>
 
-            <section class="chart-card">
-              <div class="section-title">
-                <h3>价格结构图</h3>
-                <span id="data-range">--</span>
+            <section class="market-result">
+              <div id="empty-state" class="market-empty panel">
+                <div class="market-empty-icon" aria-hidden="true">⌁</div>
+                <div>
+                  <p class="eyebrow">READY</p>
+                  <h2>输入股票代码，查看量价分析结果</h2>
+                  <p>输出买入评分、卖出风险、资金流、背驰、关键指标和最近 90 个交易日图表。</p>
+                </div>
               </div>
-              <canvas id="stock-chart" width="1100" height="360"></canvas>
+
+              <div id="loading-state" class="loading-state panel hidden">
+                <div class="loader"></div>
+                <div>
+                  <strong>正在分析公开行情</strong>
+                  <p>正在计算指标、历史相似样本和风险信号，请稍候。</p>
+                </div>
+              </div>
+
+              <div id="error-state" class="error-state hidden" role="alert"></div>
+
+              <article id="scan-view" class="scan-view hidden">
+                <section class="scan-overview panel">
+                  <header class="result-header">
+                    <div>
+                      <p class="eyebrow" id="scan-meta">MARKET SCAN</p>
+                      <h2>全 A Top 10 买入观察池</h2>
+                    </div>
+                    <div class="score-card">
+                      <span>当前入榜</span>
+                      <strong id="scan-count">0</strong>
+                    </div>
+                  </header>
+                  <div class="scan-summary">
+                    <div><span>读取股票数</span><strong id="scan-fetched">0</strong></div>
+                    <div><span>扫描进度</span><strong><span id="scan-finished">0</span>/<span id="scan-total">--</span></strong></div>
+                    <div><span>剔除数量</span><strong id="scan-skipped">0</strong></div>
+                    <div><span>失败数量</span><strong id="scan-failed">0</strong></div>
+                    <div><span>运行状态</span><strong id="scan-refresh-status">待启动</strong></div>
+                  </div>
+                </section>
+                <section class="panel scan-table-wrap">
+                  <div class="table-scroll">
+                    <table class="data-table scan-table">
+                      <thead>
+                        <tr>
+                          <th>排名</th>
+                          <th>股票</th>
+                          <th>建议</th>
+                          <th>评分</th>
+                          <th>历史达标</th>
+                          <th>核心理由</th>
+                          <th>风险</th>
+                        </tr>
+                      </thead>
+                      <tbody id="scan-results"></tbody>
+                    </table>
+                  </div>
+                  <div id="scan-empty" class="scan-empty">正在等待第一只股票完成分析。</div>
+                </section>
+              </article>
+
+              <article id="advice-view" class="advice-view hidden">
+                <section class="panel result-hero">
+                  <header class="result-header">
+                    <div>
+                      <p class="eyebrow stock-meta">
+                        <span id="stock-code">--</span>
+                        <span id="stock-name">--</span>
+                        <span id="stock-date">--</span>
+                        <a id="stock-link" href="#" target="_blank" rel="noreferrer">查看行情 ↗</a>
+                      </p>
+                      <h2 id="headline">--</h2>
+                    </div>
+                    <div class="score-pair">
+                      <div class="score-card buy-score-card">
+                        <span>买入观察评分</span>
+                        <strong id="score">--</strong>
+                        <small id="buy-action-label">--</small>
+                      </div>
+                      <div class="score-card sell-score-card">
+                        <span>卖出风险评分</span>
+                        <strong id="sell-score">--</strong>
+                        <small id="sell-action-label">--</small>
+                      </div>
+                    </div>
+                  </header>
+                  <div class="market-strip">
+                    <div><span>收盘价</span><strong id="close-price">--</strong></div>
+                    <div><span>1 日涨跌</span><strong id="return-1d">--</strong></div>
+                    <div><span>5 日涨跌</span><strong id="return-5d">--</strong></div>
+                    <div><span>成交量 / 20 日均量</span><strong id="volume-ratio">--</strong></div>
+                    <div><span>年线 MA250</span><strong id="ma250">--</strong></div>
+                    <div><span>MACD</span><strong id="macd-summary">--</strong></div>
+                    <div><span>首日高点</span><strong id="first-day-high">--</strong></div>
+                  </div>
+                </section>
+
+                <section class="panel stock-chart-card">
+                  <header class="panel-header">
+                    <div>
+                      <h2>价格结构图</h2>
+                      <p class="panel-description">K 线与成交量</p>
+                    </div>
+                    <span class="panel-status" id="data-range">--</span>
+                  </header>
+                  <div class="stock-canvas-wrap">
+                    <canvas id="stock-chart"></canvas>
+                  </div>
+                </section>
+
+                <section class="analysis-grid">
+                  <article class="panel metric-panel">
+                    <header class="panel-header">
+                      <h2>资金流向</h2>
+                      <span class="panel-status" id="fund-flow-adjustment">--</span>
+                    </header>
+                    <div class="metric-summary">
+                      <div><span>资金信号</span><strong id="fund-flow-signal">--</strong></div>
+                      <div><span>当日主力</span><strong id="fund-flow-latest">--</strong></div>
+                      <div><span>5 日主力</span><strong id="fund-flow-5d">--</strong></div>
+                      <div><span>10 日主力</span><strong id="fund-flow-10d">--</strong></div>
+                    </div>
+                    <p class="metric-note" id="fund-flow-explanation">资金流数据暂不可用。</p>
+                  </article>
+
+                  <article class="panel metric-panel">
+                    <header class="panel-header">
+                      <h2>背驰信号</h2>
+                      <span class="panel-status" id="divergence-adjustment">--</span>
+                    </header>
+                    <div class="metric-summary">
+                      <div><span>类型</span><strong id="divergence-signal">--</strong></div>
+                      <div><span>置信度</span><strong id="divergence-confidence">--</strong></div>
+                      <div><span>买入调整</span><strong id="divergence-buy">--</strong></div>
+                      <div><span>卖出风险</span><strong id="divergence-sell">--</strong></div>
+                    </div>
+                    <p class="metric-note" id="divergence-explanation">背驰样本不足或暂未发现明显背驰。</p>
+                  </article>
+                </section>
+
+                <section class="detail-grid">
+                  <article class="panel detail-card"><h2>买入依据</h2><ol id="reasons"></ol></article>
+                  <article class="panel detail-card"><h2>数据证据</h2><ol id="evidence"></ol></article>
+                  <article class="panel detail-card risk"><h2>风险提示</h2><ol id="risks"></ol></article>
+                  <article class="panel detail-card sell-card">
+                    <h2>卖出依据</h2>
+                    <div id="sell-detail" class="metric-list"></div>
+                    <ol id="sell-risks"></ol>
+                  </article>
+                  <article class="panel detail-card">
+                    <h2>机器学习预测</h2>
+                    <div id="ml-detail" class="metric-list"></div>
+                  </article>
+                  <article class="panel detail-card wide"><h2>下一步观察</h2><ol id="observations"></ol></article>
+                </section>
+              </article>
+            </section>
+          </section>
+
+          <section class="page" id="research-page" data-page-panel="research">
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">OUT-OF-SAMPLE RESEARCH</p>
+                <h1>策略研究</h1>
+                <p class="page-subtitle">验证段冻结阈值 · 测试段只评估不调参 · 成本后净收益</p>
+              </div>
+            </header>
+
+            <section class="panel workspace-control">
+              <form id="evaluation-form" class="workspace-form compact-workspace-form">
+                <label>
+                  <span>股票代码</span>
+                  <input id="evaluation-symbol" inputmode="numeric" maxlength="6" placeholder="例如 600519" required />
+                </label>
+                <label>
+                  <span>分析算法</span>
+                  <select id="evaluation-algorithm">
+                    <option value="robust_ensemble">稳健集成模型（5日）</option>
+                    <option value="time_decay_knn">时间衰减 KNN（5日）</option>
+                    <option value="knn">KNN 相似样本</option>
+                    <option value="weighted_knn">加权 KNN</option>
+                    <option value="logistic_regression">逻辑回归</option>
+                  </select>
+                </label>
+                <button id="evaluation-submit" class="primary-button" type="submit">执行样本外验证</button>
+              </form>
             </section>
 
-            <section class="metric-panel fund-flow-panel">
-              <div class="section-title">
-                <h3>资金流向</h3>
-                <span id="fund-flow-adjustment">--</span>
-              </div>
-              <div class="metric-summary">
-                <div>
-                  <span>资金信号</span>
-                  <strong id="fund-flow-signal">--</strong>
-                </div>
-                <div>
-                  <span>当日主力</span>
-                  <strong id="fund-flow-latest">--</strong>
-                </div>
-                <div>
-                  <span>5 日主力</span>
-                  <strong id="fund-flow-5d">--</strong>
-                </div>
-                <div>
-                  <span>10 日主力</span>
-                  <strong id="fund-flow-10d">--</strong>
-                </div>
-              </div>
-              <div class="metric-note">
-                <p id="fund-flow-explanation">资金流数据暂不可用。</p>
+            <section id="evaluation-empty" class="panel feature-empty">
+              <div class="feature-empty-icon" aria-hidden="true">⌬</div>
+              <div>
+                <p class="eyebrow">WALK-FORWARD</p>
+                <h2>用未参与阈值选择的数据检验策略</h2>
+                <p>系统先在验证段选择并冻结概率阈值，再仅用后续测试段报告结果，降低重复调参造成的过拟合风险。</p>
               </div>
             </section>
+            <section id="evaluation-loading" class="panel feature-loading hidden">
+              <div class="loader"></div>
+              <div><strong>正在滚动训练与验证</strong><p>需要逐个历史时点重新训练模型，请稍候。</p></div>
+            </section>
+            <div id="evaluation-error" class="error-state hidden" role="alert"></div>
 
-            <section class="detail-grid">
-              <div class="detail-card">
-                <h3>买入依据</h3>
-                <ol id="reasons"></ol>
+            <section id="evaluation-result" class="workspace-results hidden">
+              <section class="result-metric-grid evaluation-metrics" aria-label="样本外验证指标">
+                <article class="result-metric comparison-metric">
+                  <span>样本外 Precision vs 基准达标率</span>
+                  <strong class="metric-comparison">
+                    <span id="evaluation-precision">--</span>
+                    <em>vs</em>
+                    <span id="evaluation-base-rate">--</span>
+                  </strong>
+                  <small id="evaluation-precision-delta">比较模型筛选后与全部测试样本</small>
+                </article>
+                <article class="result-metric"><span>Lift</span><strong id="evaluation-lift">--</strong><small>Precision ÷ 基准达标率</small></article>
+                <article class="result-metric"><span>Precision 95% 区间</span><strong id="evaluation-precision-ci">--</strong><small>避免只看点估计</small></article>
+                <article class="result-metric"><span>冻结阈值</span><strong id="evaluation-threshold">--</strong><small>仅在验证段选择</small></article>
+                <article class="result-metric"><span>Test Coverage</span><strong id="evaluation-coverage">--</strong><small>入选信号覆盖率</small></article>
+                <article class="result-metric"><span>平均净收益</span><strong id="evaluation-net-return">--</strong><small>已扣基础交易成本</small></article>
+                <article class="result-metric"><span>Brier 分数</span><strong id="evaluation-brier">--</strong><small>越低代表概率误差越小</small></article>
+              </section>
+              <section class="panel result-context-card">
+                <header class="panel-header">
+                  <div><h2>验证边界</h2><p class="panel-description">测试段指标不会反向参与阈值选择</p></div>
+                  <span class="status-badge research" id="evaluation-release-badge"><i></i>待评估</span>
+                </header>
+                <dl class="context-list evaluation-context-list">
+                  <div><dt>算法</dt><dd id="evaluation-algorithm-name">--</dd></div>
+                  <div><dt>预测周期</dt><dd id="evaluation-horizon">--</dd></div>
+                  <div><dt>验证区间</dt><dd id="evaluation-validation-range">--</dd></div>
+                  <div><dt>测试区间</dt><dd id="evaluation-test-range">--</dd></div>
+                  <div>
+                    <dt>测试样本</dt>
+                    <dd><span id="evaluation-samples">--</span> · <span id="evaluation-selected">入选 --</span></dd>
+                  </div>
+                  <div><dt>发布状态</dt><dd id="evaluation-release-status">--</dd></div>
+                </dl>
+                <p class="result-disclaimer" id="evaluation-release-reason"></p>
+                <p class="result-disclaimer" id="evaluation-disclaimer"></p>
+              </section>
+            </section>
+          </section>
+
+          <section class="page" id="backtest-page" data-page-panel="backtest">
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">STRATEGY BACKTEST</p>
+                <h1>回测分析</h1>
+                <p class="page-subtitle">下一交易日成交 · 费用与滑点 · 期末可变现权益</p>
               </div>
-              <div class="detail-card">
-                <h3>数据证据</h3>
-                <ol id="evidence"></ol>
-              </div>
-              <div class="detail-card risk">
-                <h3>风险提示</h3>
-                <ol id="risks"></ol>
-              </div>
-              <div class="detail-card sell-card">
-                <h3>卖出依据</h3>
-                <div id="sell-detail" class="metric-list"></div>
-                <ol id="sell-risks"></ol>
-              </div>
-              <div class="detail-card">
-                <h3>机器学习预测</h3>
-                <div id="ml-detail" class="metric-list"></div>
-              </div>
-              <div class="detail-card wide">
-                <h3>下一步观察</h3>
-                <ol id="observations"></ol>
+            </header>
+
+            <section class="panel workspace-control">
+              <form id="backtest-form" class="workspace-form backtest-form">
+                <label>
+                  <span>股票代码</span>
+                  <input id="backtest-symbol" inputmode="numeric" maxlength="6" placeholder="例如 600519" required />
+                </label>
+                <label>
+                  <span>分析算法</span>
+                  <select id="backtest-algorithm">
+                    <option value="robust_ensemble">稳健集成模型（5日）</option>
+                    <option value="time_decay_knn">时间衰减 KNN（5日）</option>
+                    <option value="knn">KNN 相似样本</option>
+                    <option value="weighted_knn">加权 KNN</option>
+                    <option value="logistic_regression">逻辑回归</option>
+                  </select>
+                </label>
+                <label>
+                  <span>初始资金（元）</span>
+                  <input id="backtest-initial-cash" type="number" min="1" step="1000" value="100000" required />
+                </label>
+                <label>
+                  <span>买入评分阈值</span>
+                  <input id="backtest-buy-score" type="number" min="0" max="100" step="1" value="60" required />
+                </label>
+                <label>
+                  <span>卖出风险阈值</span>
+                  <input id="backtest-sell-risk" type="number" min="0" max="100" step="1" value="45" required />
+                </label>
+                <label>
+                  <span>最大仓位</span>
+                  <input id="backtest-position-rate" type="number" min="0.01" max="1" step="0.01" value="0.95" required />
+                </label>
+                <details class="form-details">
+                  <summary>交易成本与期末处理</summary>
+                  <div class="parameter-grid">
+                    <label><span>佣金比例</span><input id="backtest-commission" type="number" min="0" max="0.1" step="0.0001" value="0.0003" /></label>
+                    <label><span>最低佣金（元）</span><input id="backtest-min-commission" type="number" min="0" step="0.01" value="5" /></label>
+                    <label><span>卖出印花税</span><input id="backtest-stamp-duty" type="number" min="0" max="0.1" step="0.0001" value="0.0005" /></label>
+                    <label><span>滑点比例</span><input id="backtest-slippage" type="number" min="0" max="0.1" step="0.0001" value="0.0005" /></label>
+                    <label class="checkbox-field">
+                      <input id="backtest-liquidate" type="checkbox" checked />
+                      <span>期末按最后收盘价扣费强平</span>
+                    </label>
+                  </div>
+                </details>
+                <button id="backtest-submit" class="primary-button" type="submit">运行回测</button>
+              </form>
+            </section>
+
+            <section id="backtest-empty" class="panel feature-empty">
+              <div class="feature-empty-icon" aria-hidden="true">◷</div>
+              <div>
+                <p class="eyebrow">COST-AWARE</p>
+                <h2>输入参数后运行可复盘回测</h2>
+                <p>结果按完整买卖交易统计胜率，同时展示利润因子、夏普、回撤及每一笔实际成交。</p>
               </div>
             </section>
-          </article>
-        </section>
-      </section>
-    </main>
+            <section id="backtest-loading" class="panel feature-loading hidden">
+              <div class="loader"></div>
+              <div><strong>正在生成历史信号</strong><p>模型会按历史切片逐日计算，运行时间取决于算法和样本量。</p></div>
+            </section>
+            <div id="backtest-error" class="error-state hidden" role="alert"></div>
 
-    <script src="/app.js?v=20260630-stock-link"></script>
+            <section id="backtest-result" class="workspace-results hidden">
+              <section class="result-metric-grid backtest-metrics" aria-label="回测核心指标">
+                <article class="result-metric"><span>总收益率</span><strong id="backtest-total-return">--</strong><small id="backtest-final-equity">期末权益 --</small></article>
+                <article class="result-metric"><span>最大回撤</span><strong id="backtest-max-drawdown">--</strong><small>统一按正数展示</small></article>
+                <article class="result-metric"><span>完整交易胜率</span><strong id="backtest-win-rate">--</strong><small id="backtest-closed-count">完整交易 --</small></article>
+                <article class="result-metric"><span>Profit Factor</span><strong id="backtest-profit-factor">--</strong><small>总盈利 / 总亏损</small></article>
+                <article class="result-metric"><span>Sharpe</span><strong id="backtest-sharpe">--</strong><small>按日收益年化</small></article>
+                <article class="result-metric"><span>Calmar</span><strong id="backtest-calmar">--</strong><small>年化收益 / 最大回撤</small></article>
+              </section>
+
+              <section class="panel">
+                <div class="result-summary-strip">
+                  <div><span>区间</span><strong id="backtest-date-range">--</strong></div>
+                  <div><span>年化收益</span><strong id="backtest-annualized-return">--</strong></div>
+                  <div><span>单笔期望</span><strong id="backtest-expectancy">--</strong></div>
+                  <div><span>资金暴露</span><strong id="backtest-exposure">--</strong></div>
+                  <div><span>成交笔数</span><strong id="backtest-order-count">--</strong></div>
+                  <div><span>未平仓头寸</span><strong id="backtest-open-count">--</strong></div>
+                </div>
+              </section>
+
+              <section class="panel result-table-panel">
+                <header class="panel-header">
+                  <div><h2>成交记录</h2><p class="panel-description">信号日与成交日分开记录</p></div>
+                </header>
+                <div class="table-scroll">
+                  <table class="data-table workspace-table backtest-trade-table">
+                    <thead><tr><th>信号日</th><th>成交日</th><th>方向</th><th>成交价</th><th>数量</th><th>成交额</th><th>费用</th><th>原因</th></tr></thead>
+                    <tbody id="backtest-trades"></tbody>
+                  </table>
+                </div>
+              </section>
+              <p class="result-disclaimer" id="backtest-disclaimer"></p>
+            </section>
+          </section>
+
+          <section class="page" id="portfolios-page" data-page-panel="portfolios">
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow">PORTFOLIO LEDGER</p>
+                <h1>组合管理</h1>
+                <p class="page-subtitle">手工交易流水 · 现金与持仓重放 · 本地数据库</p>
+              </div>
+            </header>
+
+            <section class="portfolio-top-grid">
+              <article class="panel">
+                <header class="panel-header"><div><h2>创建组合</h2><p class="panel-description">初始资金和起始日创建后用于重放所有交易</p></div></header>
+                <form id="portfolio-create-form" class="stacked-form">
+                  <label><span>组合名称</span><input id="portfolio-name" maxlength="40" placeholder="例如 稳健组合" required /></label>
+                  <label><span>初始资金（元）</span><input id="portfolio-initial-cash" type="number" min="1" step="1000" value="100000" required /></label>
+                  <label><span>组合起始日</span><input id="portfolio-base-date" type="date" required /></label>
+                  <label><span>比较基准</span><input id="portfolio-benchmark" inputmode="numeric" maxlength="6" value="000300" required /></label>
+                  <button id="portfolio-create-submit" class="primary-button" type="submit">创建组合</button>
+                </form>
+              </article>
+
+              <article class="panel portfolio-selector-card">
+                <header class="panel-header"><div><h2>当前组合</h2><p class="panel-description">选择后查看现金、持仓和交易流水</p></div></header>
+                <div class="portfolio-selector">
+                  <label><span>组合</span><select id="portfolio-select"><option value="">暂无组合</option></select></label>
+                  <button id="portfolio-refresh" class="secondary-button" type="button">刷新</button>
+                </div>
+                <div id="portfolio-list-empty" class="inline-empty">尚未创建组合。</div>
+                <div id="portfolio-error" class="error-state hidden" role="alert"></div>
+              </article>
+            </section>
+
+            <section id="portfolio-detail-empty" class="panel feature-empty">
+              <div class="feature-empty-icon" aria-hidden="true">▣</div>
+              <div><p class="eyebrow">LEDGER FIRST</p><h2>创建或选择一个组合</h2><p>所有金额来自本地交易流水重放；没有交易时不会生成虚假持仓或收益。</p></div>
+            </section>
+
+            <section id="portfolio-detail" class="workspace-results hidden">
+              <section class="result-metric-grid portfolio-metrics">
+                <article class="result-metric"><span>可用现金</span><strong id="portfolio-cash">--</strong><small>交易流水重放结果</small></article>
+                <article class="result-metric"><span>总资产</span><strong id="portfolio-total-assets">--</strong><small id="portfolio-valuation-note">无行情时按可用账面值</small></article>
+                <article class="result-metric"><span>初始资金</span><strong id="portfolio-initial-assets">--</strong><small id="portfolio-base-date-label">起始日 --</small></article>
+                <article class="result-metric"><span>当前持仓</span><strong id="portfolio-position-count">--</strong><small id="portfolio-transaction-count">流水 -- 笔</small></article>
+              </section>
+
+              <section class="panel">
+                <header class="panel-header"><div><h2>录入交易</h2><p class="panel-description">BUY/SELL 均会重放全部历史流水并校验现金与持仓</p></div></header>
+                <form id="transaction-form" class="workspace-form transaction-form">
+                  <label><span>方向</span><select id="transaction-side"><option value="BUY">BUY 买入</option><option value="SELL">SELL 卖出</option></select></label>
+                  <label><span>股票代码</span><input id="transaction-symbol" inputmode="numeric" maxlength="6" placeholder="600519" required /></label>
+                  <label><span>交易日期</span><input id="transaction-date" type="date" required /></label>
+                  <label><span>成交价（元）</span><input id="transaction-price" type="number" min="0.01" step="0.01" required /></label>
+                  <label><span>数量（股；BUY 需 100 股整数倍）</span><input id="transaction-quantity" type="number" min="1" step="1" required /></label>
+                  <label><span>佣金（元）</span><input id="transaction-commission" type="number" min="0" step="0.01" placeholder="留空自动计算" /></label>
+                  <label><span>印花税（元）</span><input id="transaction-stamp-tax" type="number" min="0" step="0.01" placeholder="留空自动计算" /></label>
+                  <label><span>备注</span><input id="transaction-note" maxlength="120" placeholder="可选" /></label>
+                  <button id="transaction-submit" class="primary-button" type="submit">保存交易</button>
+                </form>
+              </section>
+
+              <section class="portfolio-data-grid">
+                <article class="panel result-table-panel">
+                  <header class="panel-header"><div><h2>当前持仓</h2><p class="panel-description">按交易成本计算持仓成本</p></div></header>
+                  <div class="table-scroll">
+                    <table class="data-table workspace-table">
+                      <thead><tr><th>股票代码</th><th>数量</th><th>平均成本</th><th>最新价</th><th>持仓成本</th><th>市值</th><th>浮动盈亏</th></tr></thead>
+                      <tbody id="portfolio-positions"></tbody>
+                    </table>
+                  </div>
+                </article>
+                <article class="panel result-table-panel">
+                  <header class="panel-header"><div><h2>交易流水</h2><p class="panel-description">按交易日期和录入顺序展示</p></div></header>
+                  <div class="table-scroll">
+                    <table class="data-table workspace-table transaction-table">
+                      <thead><tr><th>日期</th><th>方向</th><th>股票</th><th>价格</th><th>数量</th><th>费用</th><th>备注</th></tr></thead>
+                      <tbody id="portfolio-transactions"></tbody>
+                    </table>
+                  </div>
+                </article>
+              </section>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js?v=20260729-release-gate"></script>
   </body>
 </html>

@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import argparse
-import json
 import errno
+import json
+import sqlite3
 from dataclasses import asdict
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
+from api.portfolio import (
+    build_create_portfolio_response,
+    build_dashboard_response,
+    build_portfolio_detail_response,
+    build_portfolio_list_response,
+    build_record_transaction_response,
+    build_refresh_portfolio_response,
+)
+from api.research import build_backtest_response, build_evaluation_response
 from analysis.ml_model import ALGORITHMS
 from analysis.market_scanner import MARKET_SCANNER
 from analysis.scanner import parse_symbols, scan_top_stocks
@@ -14,6 +25,7 @@ from analysis.service import analyze_stock_sell, build_advice
 from data.errors import DataRefreshError
 from data.source import fetch_bars
 from output.formatter import advice_to_dict
+from storage.migrations import initialize_database
 
 
 STATIC_DIR = Path(__file__).with_name("web_static")
@@ -25,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
 
+    initialize_database()
     server = _create_server(args.host, args.port)
     host, port = server.server_address
     print(f"Web 服务已启动：http://{host}:{port}")
@@ -76,29 +89,61 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             return
 
     def do_POST(self) -> None:
-        if self.path == "/api/advise":
+        path = urlsplit(self.path).path
+        if path == "/api/advise":
             self._handle_advise()
             return
-        if self.path == "/api/sell-advice":
+        if path == "/api/sell-advice":
             self._handle_sell_advice()
             return
-        if self.path == "/api/scan":
+        if path == "/api/scan":
             self._handle_scan()
             return
-        if self.path == "/api/market-scan/start":
+        if path == "/api/market-scan/start":
             self._handle_market_scan_start()
             return
-        if self.path == "/api/market-scan/stop":
+        if path == "/api/market-scan/stop":
             MARKET_SCANNER.stop()
             self._send_json({"ok": True})
+            return
+        if path == "/api/evaluate":
+            self._handle_evaluate()
+            return
+        if path == "/api/backtest":
+            self._handle_backtest()
+            return
+        if path == "/api/portfolios":
+            self._handle_create_portfolio()
+            return
+        portfolio_route = _portfolio_route(path)
+        if portfolio_route and portfolio_route[1] == "transactions":
+            self._handle_record_transaction(portfolio_route[0])
+            return
+        if portfolio_route and portfolio_route[1] == "refresh":
+            self._handle_refresh_portfolio(portfolio_route[0])
             return
         self.send_error(404)
 
     def do_GET(self) -> None:
-        if self.path == "/api/market-scan/status":
+        parsed = urlsplit(self.path)
+        path = parsed.path
+        if path == "/api/health":
+            self._handle_health()
+            return
+        if path == "/api/dashboard":
+            self._handle_dashboard(parse_qs(parsed.query))
+            return
+        if path == "/api/portfolios":
+            self._handle_list_portfolios()
+            return
+        portfolio_route = _portfolio_route(path)
+        if portfolio_route and portfolio_route[1] == "":
+            self._handle_portfolio_detail(portfolio_route[0])
+            return
+        if path == "/api/market-scan/status":
             self._send_json({"ok": True, "snapshot": asdict(MARKET_SCANNER.snapshot())})
             return
-        if self.path == "/api/market-scan/stream":
+        if path == "/api/market-scan/stream":
             self._handle_market_scan_stream()
             return
         super().do_GET()
@@ -207,6 +252,138 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_json({"ok": False, "error": "请求不是有效 JSON。"}, status=400)
 
+    def _handle_health(self) -> None:
+        try:
+            initialize_database()
+            self._send_json(
+                {
+                    "ok": True,
+                    "service": "quantitative-system",
+                    "database": "ready",
+                }
+            )
+        except sqlite3.Error as exc:
+            self.log_error("数据库健康检查失败：%s", exc)
+            self._send_json({"ok": False, "error": "数据库不可用。"}, status=503)
+
+    def _handle_dashboard(self, query: dict[str, list[str]]) -> None:
+        try:
+            portfolio_id = _optional_portfolio_id(query.get("portfolio_id", [None])[0])
+            self._send_json(build_dashboard_response(portfolio_id))
+        except LookupError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=404)
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=422)
+        except sqlite3.Error as exc:
+            self.log_error("仪表盘数据库读取失败：%s", exc)
+            self._send_json(
+                {"ok": False, "error": "仪表盘数据库读取失败。"},
+                status=_database_error_status(exc),
+            )
+
+    def _handle_list_portfolios(self) -> None:
+        try:
+            self._send_json(build_portfolio_list_response())
+        except sqlite3.Error as exc:
+            self.log_error("组合列表读取失败：%s", exc)
+            self._send_json(
+                {"ok": False, "error": "组合列表读取失败。"},
+                status=_database_error_status(exc),
+            )
+
+    def _handle_create_portfolio(self) -> None:
+        try:
+            self._send_json(build_create_portfolio_response(self._read_json()), status=201)
+        except json.JSONDecodeError:
+            self._send_json({"ok": False, "error": "请求不是有效 JSON。"}, status=400)
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=422)
+        except sqlite3.Error as exc:
+            self.log_error("创建组合失败：%s", exc)
+            self._send_json(
+                {"ok": False, "error": "创建组合失败。"},
+                status=_database_error_status(exc),
+            )
+
+    def _handle_portfolio_detail(self, portfolio_id: int) -> None:
+        try:
+            self._send_json(build_portfolio_detail_response(portfolio_id))
+        except LookupError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=404)
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=422)
+        except sqlite3.Error as exc:
+            self.log_error("组合详情读取失败：%s", exc)
+            self._send_json(
+                {"ok": False, "error": "组合详情读取失败。"},
+                status=_database_error_status(exc),
+            )
+
+    def _handle_record_transaction(self, portfolio_id: int) -> None:
+        try:
+            response = build_record_transaction_response(portfolio_id, self._read_json())
+            self._send_json(
+                response,
+                status=200 if response.get("idempotent_replay") else 201,
+            )
+        except json.JSONDecodeError:
+            self._send_json({"ok": False, "error": "请求不是有效 JSON。"}, status=400)
+        except LookupError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=404)
+        except ValueError as exc:
+            status = (
+                409
+                if (
+                    "现金不足" in str(exc)
+                    or "超过持仓" in str(exc)
+                    or "同一 request_id 已用于不同" in str(exc)
+                )
+                else 422
+            )
+            self._send_json({"ok": False, "error": str(exc)}, status=status)
+        except DataRefreshError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=502)
+        except sqlite3.Error as exc:
+            self.log_error("记录交易失败：%s", exc)
+            self._send_json(
+                {"ok": False, "error": "记录交易失败。"},
+                status=_database_error_status(exc),
+            )
+
+    def _handle_refresh_portfolio(self, portfolio_id: int) -> None:
+        try:
+            self._send_json(build_refresh_portfolio_response(portfolio_id))
+        except LookupError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=404)
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=422)
+        except sqlite3.Error as exc:
+            self.log_error("刷新组合失败：%s", exc)
+            self._send_json(
+                {"ok": False, "error": "刷新组合失败。"},
+                status=_database_error_status(exc),
+            )
+
+    def _handle_evaluate(self) -> None:
+        try:
+            self._send_json(build_evaluation_response(self._read_json()))
+        except json.JSONDecodeError:
+            self._send_json({"ok": False, "error": "请求不是有效 JSON。"}, status=400)
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=422)
+        except DataRefreshError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=502)
+
+    def _handle_backtest(self) -> None:
+        try:
+            self._send_json(build_backtest_response(self._read_json()))
+        except json.JSONDecodeError:
+            self._send_json({"ok": False, "error": "请求不是有效 JSON。"}, status=400)
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=422)
+        except DataRefreshError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=502)
+
     def _handle_market_scan_stream(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -227,12 +404,27 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
                 return
 
     def _read_json(self) -> dict:
-        content_length = int(self.headers.get("Content-Length", "0"))
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise json.JSONDecodeError("Content-Length 格式不正确", "", 0) from exc
+        if content_length <= 0 or content_length > 1_048_576:
+            raise json.JSONDecodeError("请求体为空或过大", "", 0)
         raw_body = self.rfile.read(content_length)
-        return json.loads(raw_body.decode("utf-8"))
+        try:
+            decoded_body = raw_body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise json.JSONDecodeError("请求体必须使用 UTF-8 编码", "", 0) from exc
+        payload = json.loads(
+            decoded_body,
+            parse_constant=_reject_json_constant,
+        )
+        if not isinstance(payload, dict):
+            raise json.JSONDecodeError("JSON 顶层必须是对象", "", 0)
+        return payload
 
     def _send_event(self, snapshot) -> bool:
-        body = json.dumps({"ok": True, "snapshot": asdict(snapshot)}, ensure_ascii=False)
+        body = json.dumps({"ok": True, "snapshot": asdict(snapshot)}, ensure_ascii=True)
         try:
             self.wfile.write(f"data: {body}\n\n".encode("utf-8"))
             self.wfile.flush()
@@ -241,7 +433,7 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
         return True
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -257,6 +449,10 @@ def _normalize_symbol(symbol: str) -> str:
     if cleaned.isdigit() and len(cleaned) == 6:
         return cleaned
     return ""
+
+
+def _reject_json_constant(value: str) -> None:
+    raise json.JSONDecodeError(f"JSON 不允许常量 {value}", value, 0)
 
 
 def _parse_int(value, default: int) -> int:
@@ -280,6 +476,40 @@ def _parse_optional_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _portfolio_route(path: str) -> tuple[int, str] | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) not in {3, 4} or parts[:2] != ["api", "portfolios"]:
+        return None
+    try:
+        portfolio_id = int(parts[2])
+    except ValueError:
+        return None
+    if portfolio_id <= 0:
+        return None
+    action = parts[3] if len(parts) == 4 else ""
+    if action not in {"", "transactions", "refresh"}:
+        return None
+    return portfolio_id, action
+
+
+def _optional_portfolio_id(value: str | None) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        portfolio_id = int(value)
+    except ValueError as exc:
+        raise ValueError("portfolio_id 必须是正整数。") from exc
+    if portfolio_id <= 0:
+        raise ValueError("portfolio_id 必须是正整数。")
+    return portfolio_id
+
+
+def _database_error_status(exc: sqlite3.Error) -> int:
+    if isinstance(exc, sqlite3.OperationalError):
+        return 503
+    return 500
 
 
 def _chart_payload(bars) -> dict:

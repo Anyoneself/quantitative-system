@@ -9,6 +9,7 @@
 ./scripts/quant sell <symbol> --cost-price <price>
 ./scripts/quant scan --symbols <symbols> --once
 ./scripts/quant entry-scan --symbols <symbols> --once
+./scripts/quant evaluate <symbol>
 ./scripts/quant backtest <symbol>
 ./scripts/quant web --port 8000
 ```
@@ -136,7 +137,19 @@ NO_POSITION  仅技术风险提示
 背驰置信度优先，成交额比例越低越靠前，综合评分作为辅助。
 ```
 
-## 6. `backtest` 单股回测
+## 6. `evaluate` 样本外验证
+
+用途：按时间顺序扩展训练窗口，在验证段选择阈值，冻结后只在测试段报告表现。
+
+```bash
+./scripts/quant evaluate 600519
+./scripts/quant evaluate 600519 --algorithm robust_ensemble
+./scripts/quant evaluate 600519 --format json
+```
+
+输出包括冻结阈值、测试段 Precision、基准达标率、Lift、Wilson 95% 区间、Coverage、平均净收益、Brier、样本数和日期范围。测试段结果不能用于继续调参。
+
+## 7. `backtest` 单股回测
 
 用途：验证买入评分阈值和卖出风险阈值在历史数据中的表现。
 
@@ -154,12 +167,13 @@ NO_POSITION  仅技术风险提示
 - `--max-position-rate`：最大仓位比例，默认 `0.95`。
 - `--commission-rate`：佣金比例，默认 `0.0003`。
 - `--min-commission`：最低佣金，默认 `5`。
-- `--stamp-duty-rate`：卖出印花税比例，默认 `0.001`。
+- `--stamp-duty-rate`：卖出印花税比例，默认 `0.0005`。
 - `--slippage-rate`：滑点比例，默认 `0.0005`。
+- `--no-liquidate-at-end`：期末保留持仓；默认按最后收盘价计滑点和费用后平仓。
 
 回测不会使用未来数据：信号在收盘后生成，下一交易日开盘成交。
 
-## 7. `web` 本地 Web
+## 8. `web` 本地 Web
 
 ```bash
 ./scripts/quant web --port 8000
@@ -168,7 +182,7 @@ NO_POSITION  仅技术风险提示
 
 Web 默认监听 `127.0.0.1`。如果 `8000` 被占用，会尝试 `8001` 到 `8010`。
 
-## 8. 算法选项
+## 9. 算法选项
 
 ```text
 knn                  KNN 相似样本，下一交易日
@@ -180,7 +194,7 @@ robust_ensemble      稳健集成模型，未来 5 日
 
 `robust_ensemble` 是默认算法，它混合时间衰减 KNN、逻辑回归和技术先验。
 
-## 9. 常见失败
+## 10. 常见失败
 
 - 股票代码不是 6 位数字：CLI 返回参数错误。
 - 行情接口失败：单股分析返回 `NO_DATA` 或回测报错。

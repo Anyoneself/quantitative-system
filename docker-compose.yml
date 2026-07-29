@@ -1,0 +1,18 @@
+services:
+  quant:
+    build:
+      context: .
+    ports:
+      - "${QUANT_WEB_BIND:-127.0.0.1}:${QUANT_WEB_PORT:-8000}:8000"
+    env_file:
+      - path: config/runtime.env
+        required: false
+    environment:
+      QUANT_DB_PATH: /app/data/app/quantitative_system.db
+      PUBLIC_DATA_RAW_DIR: /app/data/raw/http
+    volumes:
+      - quant-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  quant-data:

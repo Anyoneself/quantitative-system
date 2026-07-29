@@ -18,6 +18,7 @@ from analysis.sell_advisor import build_sell_advice
 from analysis.patterns import detect_patterns
 from data.errors import DataRefreshError
 from data.models import FundFlowBar, PriceVolumeBar, StockInfo
+from data.market_rules import price_limit_value
 from data.public_sources import fetch_public_stock_bars
 from output.formatter import format_advice
 
@@ -64,6 +65,27 @@ class AdvisorTest(unittest.TestCase):
         self.assertEqual(bars[-1].trade_date.isoformat(), "2026-07-08")
         self.assertEqual(bars[-1].close, 101)
         self.assertEqual(bars[-1].volume, 23456)
+
+    def test_tencent_unadjusted_request_reads_day_series(self) -> None:
+        payload = {
+            "data": {
+                "sh600519": {
+                    "qt": {"sh600519": ["1", "贵州茅台", "600519"]},
+                    "qfqday": [
+                        ["2026-07-08", "90", "91", "92", "89", "1000"],
+                    ],
+                    "day": [
+                        ["2026-07-08", "100", "101", "102", "99", "1000"],
+                    ],
+                }
+            }
+        }
+
+        with patch("data.public_sources._fetch_json", return_value=payload) as fetch_json:
+            bars = fetch_public_stock_bars("600519", adjustment_type="none")
+
+        self.assertEqual(bars[-1].close, 101)
+        self.assertNotIn("qfq", fetch_json.call_args.args[0])
 
     def test_ml_prediction_returns_probability(self) -> None:
         bars = _build_bars_for_limit_up()
@@ -439,14 +461,15 @@ def _build_bars_for_limit_up():
         )
 
     previous = bars[-1]
+    limit_up_price = price_limit_value(previous.close, 0.10, "UP")
     bars.append(
         PriceVolumeBar(
             name="贵州茅台",
             trade_date=start + timedelta(days=60),
-            open=previous.close * 1.08,
-            high=previous.close * 1.10,
-            low=previous.close * 1.07,
-            close=previous.close * 1.10,
+            open=limit_up_price,
+            high=limit_up_price,
+            low=limit_up_price,
+            close=limit_up_price,
             volume=600,
             amount=80_000_000,
         )

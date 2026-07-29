@@ -227,6 +227,7 @@ def generate_advice(
             "长期趋势尚未修复，按强势股回档策略应先等重新站上年线。"
         )
 
+    score = _apply_model_gate(score, ml_prediction, risks)
     observations.extend(_build_observations(indicators, patterns))
     action = _map_score_to_action(score)
     reasons.insert(0, _build_action_summary(action, score, indicators, ml_prediction))
@@ -262,6 +263,19 @@ def _map_score_to_action(score: int) -> str:
 
 def _clamp_score(score: int) -> int:
     return max(0, min(100, score))
+
+
+def _apply_model_gate(score: int, prediction: MlPrediction | None, risks: list[str]) -> int:
+    if prediction is None:
+        risks.append("缺少可评估的模型结果，技术形态不能单独触发买入建议。")
+        return min(score, 44)
+    if prediction.buy_probability < 0.45:
+        risks.append("模型分数低于风险下限，其他相关技术信号不能将结论提升为买入。")
+        return min(score, 44)
+    if prediction.buy_probability < 0.60:
+        # 技术指标与模型特征高度相关，避免重复加分把中等模型信号误当成高胜率信号
+        return min(score, 59)
+    return score
 
 
 def _horizon_text(horizon_days: int) -> str:

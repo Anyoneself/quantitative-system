@@ -4,10 +4,17 @@ from dataclasses import dataclass
 from math import exp, sqrt
 from typing import TypeAlias
 
+from data.market_rules import price_limit_rate, price_limit_value
 from data.models import PriceVolumeBar
 
 
 Sample: TypeAlias = tuple[list[float], int, int]
+
+
+DEFAULT_COMMISSION_RATE = 0.0003
+DEFAULT_STAMP_DUTY_RATE = 0.0005
+DEFAULT_SLIPPAGE_RATE = 0.0005
+DEFAULT_MAX_DRAWDOWN_RATE = 0.06
 
 
 @dataclass(frozen=True)
@@ -19,6 +26,15 @@ class MlPrediction:
     positive_count: int
     neighbor_count: int
     horizon_days: int = 1
+
+
+@dataclass(frozen=True)
+class ForwardOutcome:
+    entry_price: float
+    exit_price: float
+    net_return: float
+    max_drawdown: float
+    label: int
 
 
 ALGORITHMS = {
@@ -37,8 +53,8 @@ def predict_next_day_buy_probability(
     if len(bars) < 45:
         return None
 
-    horizon_days = 5 if algorithm in {"robust_ensemble", "time_decay_knn"} else 1
-    min_return = 0.012 if horizon_days > 1 else 0.0
+    horizon_days = prediction_horizon_days(algorithm)
+    min_return = prediction_target_return(algorithm)
     samples = _build_samples(bars, horizon_days, min_return)
 
     if len(samples) < 20:
@@ -55,20 +71,17 @@ def predict_next_day_buy_probability(
         key=lambda sample: _distance(sample[0], normalized_predict),
     )[:neighbor_count]
     base_rate = _base_rate(samples)
+    positive_count = sum(label for _, label, _ in neighbors)
     if algorithm == "robust_ensemble":
         probability = _predict_with_robust_ensemble(bars, samples, predict_features, normalized_predict, neighbors)
-        positive_count = round(probability * neighbor_count)
     elif algorithm == "time_decay_knn":
         probability = _weighted_probability(neighbors, normalized_predict, use_time_decay=True)
         probability = _shrink_probability(probability, base_rate, len(samples), strength=90)
-        positive_count = round(probability * neighbor_count)
     elif algorithm == "weighted_knn":
         probability = _weighted_probability(neighbors, normalized_predict, use_time_decay=False)
         probability = _shrink_probability(probability, base_rate, len(samples), strength=60)
-        positive_count = round(probability * neighbor_count)
     else:
         algorithm = "knn"
-        positive_count = sum(label for _, label, _ in neighbors)
         probability = positive_count / neighbor_count
         probability = _shrink_probability(probability, base_rate, len(samples), strength=50)
 
@@ -83,18 +96,108 @@ def predict_next_day_buy_probability(
     )
 
 
+def prediction_horizon_days(algorithm: str) -> int:
+    return 5 if algorithm in {"robust_ensemble", "time_decay_knn"} else 1
+
+
+def prediction_target_return(algorithm: str) -> float:
+    return 0.012 if prediction_horizon_days(algorithm) > 1 else 0.0
+
+
+def calculate_forward_outcome(
+    bars: list[PriceVolumeBar],
+    signal_index: int,
+    horizon_days: int,
+    min_return: float,
+    commission_rate: float = DEFAULT_COMMISSION_RATE,
+    stamp_duty_rate: float = DEFAULT_STAMP_DUTY_RATE,
+    slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
+    max_drawdown_rate: float = DEFAULT_MAX_DRAWDOWN_RATE,
+) -> ForwardOutcome | None:
+    if horizon_days < 1:
+        raise ValueError("预测周期必须至少为 1 个交易日。")
+    if signal_index < 0 or signal_index + horizon_days >= len(bars):
+        raise ValueError("信号后的行情不足，无法计算完整持有期结果。")
+    if min(commission_rate, stamp_duty_rate, slippage_rate, max_drawdown_rate) < 0:
+        raise ValueError("交易成本、滑点和最大回撤阈值不能为负数。")
+    if commission_rate + stamp_duty_rate >= 1:
+        raise ValueError("卖出交易成本必须小于成交金额。")
+
+    entry_bar = bars[signal_index + 1]
+    exit_bar = bars[signal_index + horizon_days]
+    if entry_bar.volume <= 0 or exit_bar.volume <= 0:
+        return None
+    if _is_locked_limit_bar(entry_bar, bars[signal_index].close, "UP"):
+        return None
+    if _is_locked_limit_bar(
+        exit_bar,
+        bars[signal_index + horizon_days - 1].close,
+        "DOWN",
+    ):
+        return None
+
+    # 滑点成交价限制在当日日线范围内，避免生成市场上不存在的成交价格
+    entry_price = _bounded_price(entry_bar.open * (1 + slippage_rate), entry_bar)
+    exit_price = _bounded_price(exit_bar.close * (1 - slippage_rate), exit_bar)
+    if entry_price <= 0 or exit_price <= 0:
+        raise ValueError("入场价和离场价必须大于 0。")
+
+    # 信号在收盘后生成，标签从下一交易日开盘成交开始计算，避免计入无法获得的隔夜收益。
+    entry_cost = entry_price * (1 + commission_rate)
+    exit_proceeds = exit_price * (1 - commission_rate - stamp_duty_rate)
+    net_return = _return_rate(exit_proceeds, entry_cost)
+    period_low = min(bar.low for bar in bars[signal_index + 1 : signal_index + horizon_days + 1])
+    max_drawdown = _return_rate(period_low, entry_price)
+    label = 1 if net_return >= min_return and max_drawdown > -max_drawdown_rate else 0
+    return ForwardOutcome(
+        entry_price=entry_price,
+        exit_price=exit_price,
+        net_return=net_return,
+        max_drawdown=max_drawdown,
+        label=label,
+    )
+
+
 def _build_samples(bars: list[PriceVolumeBar], horizon_days: int, min_return: float) -> list[Sample]:
     samples: list[Sample] = []
     for index in range(20, len(bars) - horizon_days):
         features = _build_features(bars, index)
-        current_close = bars[index].close
-        future_close = bars[index + horizon_days].close
-        future_low = min(bar.low for bar in bars[index + 1 : index + horizon_days + 1])
-        forward_return = _return_rate(future_close, current_close)
-        forward_drawdown = _return_rate(future_low, current_close)
-        label = 1 if forward_return >= min_return and forward_drawdown > -0.06 else 0
-        samples.append((features, label, index))
+        outcome = calculate_forward_outcome(bars, index, horizon_days, min_return)
+        if outcome is None:
+            continue
+        samples.append((features, outcome.label, index))
     return samples
+
+
+def _is_locked_limit_bar(
+    bar: PriceVolumeBar,
+    previous_close: float,
+    direction: str,
+) -> bool:
+    if not _is_one_price_bar(bar) or previous_close <= 0:
+        return False
+    # 行情对象不携带代码；用代表代码按统一板块、日期和 ST 规则推导可能适用的涨跌停幅度
+    rates = {
+        price_limit_rate(symbol, bar.name, bar.trade_date)
+        for symbol in ("600000", "300000", "800000")
+    }
+    return any(
+        abs(bar.open - price_limit_value(previous_close, rate, direction)) <= 0.001
+        for rate in rates
+    )
+
+
+def _is_one_price_bar(bar: PriceVolumeBar) -> bool:
+    return max(bar.open, bar.high, bar.low, bar.close) - min(
+        bar.open,
+        bar.high,
+        bar.low,
+        bar.close,
+    ) <= 0.001
+
+
+def _bounded_price(price: float, bar: PriceVolumeBar) -> float:
+    return min(bar.high, max(bar.low, price))
 
 
 def _predict_with_logistic(
@@ -109,7 +212,7 @@ def _predict_with_logistic(
         algorithm_name=ALGORITHMS["logistic_regression"],
         buy_probability=probability,
         sample_count=len(samples),
-        positive_count=round(probability * len(samples)),
+        positive_count=0,
         neighbor_count=0,
         horizon_days=horizon_days,
     )

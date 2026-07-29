@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
-from backtest.engine import BacktestConfig, run_backtest
-from backtest.formatter import format_backtest_result
+from analysis.evaluation import WalkForwardEvaluation, evaluate_walk_forward
 from analysis.ml_model import ALGORITHMS
 from analysis.scanner import load_symbols_from_file, parse_symbols, run_entry_signal_loop, run_scan_loop
 from analysis.service import analyze_stock, analyze_stock_sell
+from backtest.engine import BacktestConfig, run_backtest
+from backtest.formatter import format_backtest_result
 from data.errors import DataRefreshError
 from data.source import fetch_bars
 from output.formatter import format_advice, format_sell_advice
@@ -28,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_sell(args)
     if args.command == "backtest":
         return _run_backtest(args)
+    if args.command == "evaluate":
+        return _run_evaluate(args)
 
     parser.print_help()
     return 1
@@ -79,9 +84,15 @@ def _build_parser() -> argparse.ArgumentParser:
     backtest_parser.add_argument("--max-position-rate", type=float, default=0.95, help="最大仓位比例，默认 0.95")
     backtest_parser.add_argument("--commission-rate", type=float, default=0.0003, help="佣金比例，默认 0.0003")
     backtest_parser.add_argument("--min-commission", type=float, default=5.0, help="最低佣金，默认 5")
-    backtest_parser.add_argument("--stamp-duty-rate", type=float, default=0.001, help="卖出印花税比例，默认 0.001")
+    backtest_parser.add_argument("--stamp-duty-rate", type=float, default=0.0005, help="卖出印花税比例，默认 0.0005")
     backtest_parser.add_argument("--slippage-rate", type=float, default=0.0005, help="滑点比例，默认 0.0005")
+    backtest_parser.add_argument("--no-liquidate-at-end", action="store_true", help="期末保留持仓，不按最后收盘价强制平仓")
     backtest_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
+
+    evaluate_parser = subparsers.add_parser("evaluate", help="走步验证模型并输出冻结阈值后的样本外表现")
+    evaluate_parser.add_argument("symbol", help="股票代码，例如 600519")
+    evaluate_parser.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="robust_ensemble", help="机器学习算法")
+    evaluate_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
     return parser
 
 
@@ -187,6 +198,7 @@ def _run_backtest(args: argparse.Namespace) -> int:
             min_commission=args.min_commission,
             stamp_duty_rate=args.stamp_duty_rate,
             slippage_rate=args.slippage_rate,
+            liquidate_at_end=not getattr(args, "no_liquidate_at_end", False),
         )
         bars = fetch_bars(symbol)
         result = run_backtest(symbol, bars, args.algorithm, config)
@@ -196,6 +208,72 @@ def _run_backtest(args: argparse.Namespace) -> int:
 
     print(format_backtest_result(result, args.format))
     return 0
+
+
+def _run_evaluate(args: argparse.Namespace) -> int:
+    symbol = _normalize_symbol(args.symbol)
+    if not symbol:
+        print("股票代码格式不正确，只支持 6 位数字代码。", file=sys.stderr)
+        return 2
+
+    try:
+        bars = fetch_bars(symbol)
+        result = evaluate_walk_forward(bars, args.algorithm)
+    except (DataRefreshError, ValueError) as exc:
+        print(f"评估失败：{exc}", file=sys.stderr)
+        return 1
+
+    print(_format_evaluation_result(symbol, result, args.format))
+    return 0
+
+
+def _format_evaluation_result(
+    symbol: str,
+    result: WalkForwardEvaluation,
+    output_format: str,
+) -> str:
+    if output_format == "json":
+        return json.dumps({"symbol": symbol, **asdict(result)}, ensure_ascii=False, indent=2)
+
+    test = result.test
+    return "\n".join(
+        [
+            f"股票代码：{symbol}",
+            f"算法：{ALGORITHMS[result.algorithm]}（{result.algorithm}）",
+            f"预测周期：{result.horizon_days} 个交易日",
+            f"验证区间：{result.validation_start_date} 至 {result.validation_end_date}",
+            f"验证集冻结阈值：{_format_optional_percent(result.threshold)}",
+            f"样本外区间：{result.test_start_date} 至 {result.test_end_date}",
+            f"样本外 Precision：{_format_optional_percent(test.precision)}",
+            (
+                "Precision 95% 区间："
+                f"{_format_optional_percent(test.precision_ci_low)} 至 "
+                f"{_format_optional_percent(test.precision_ci_high)}"
+            ),
+            f"样本外基准达标率：{_format_optional_percent(test.base_rate)}",
+            f"样本外达标率 Lift：{_format_optional_number(test.lift)}",
+            f"样本外 Coverage：{_format_optional_percent(test.coverage)}",
+            f"样本外平均净收益：{_format_optional_percent(test.average_net_return)}",
+            f"样本外 Brier 分数：{test.brier_score:.6f}",
+            f"样本外样本数：{test.sample_count}",
+            f"样本外入选数：{test.selected_count}",
+            f"样本外达标数：{test.positive_count}",
+            f"发布状态：{result.release_status}",
+            f"发布说明：{result.release_reason}",
+        ]
+    )
+
+
+def _format_optional_percent(value: float | None) -> str:
+    if value is None:
+        return "暂无入选样本"
+    return f"{value * 100:.2f}%"
+
+
+def _format_optional_number(value: float | None) -> str:
+    if value is None:
+        return "--"
+    return f"{value:.2f}"
 
 
 def _resolve_symbols(args: argparse.Namespace) -> list[str]:

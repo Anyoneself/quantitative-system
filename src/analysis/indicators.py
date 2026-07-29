@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from data.market_rules import is_limit_price
 from data.models import PriceVolumeBar
 
 
@@ -96,7 +97,8 @@ def calculate_indicators(symbol: str, bars: list[PriceVolumeBar]) -> IndicatorRe
         macd_dif_prev=macd_dif_prev,
         macd_dea_prev=macd_dea_prev,
         macd_histogram_prev=macd_histogram_prev,
-        first_day_high=all_bars[0].high if len(all_bars) < 250 else 0.0,
+        # 仅凭截断后的行情无法确认上市首日，缺少上市日期时不生成新股突破信号
+        first_day_high=0.0,
         high_20d_prev=max(highs[-21:-1]),
         low_20d_prev=min(lows[-21:-1]),
         volume=current.volume,
@@ -106,8 +108,22 @@ def calculate_indicators(symbol: str, bars: list[PriceVolumeBar]) -> IndicatorRe
         volume_ratio_20d=_safe_ratio(current.volume, volume_ma20),
         amount=current.amount,
         amount_ma20=amount_ma20,
-        is_limit_up=return_1d >= 0.098,
-        is_limit_down=return_1d <= -0.098,
+        is_limit_up=is_limit_price(
+            current.close,
+            previous.close,
+            symbol,
+            current.name,
+            current.trade_date,
+            "UP",
+        ),
+        is_limit_down=is_limit_price(
+            current.close,
+            previous.close,
+            symbol,
+            current.name,
+            current.trade_date,
+            "DOWN",
+        ),
     )
 
 

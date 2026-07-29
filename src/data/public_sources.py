@@ -4,9 +4,12 @@ import json
 import os
 import threading
 import time
-from datetime import datetime
+from hashlib import sha256
+from pathlib import Path
+from datetime import datetime, time as datetime_time
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from data.errors import DataRefreshError
 from data.models import PriceVolumeBar, StockInfo
@@ -15,19 +18,49 @@ _STOCK_NAME_CACHE: dict[str, str] | None = None
 _REQUEST_LOCK = threading.Lock()
 _LAST_REQUEST_AT = 0.0
 DEFAULT_KLINE_DAYS = 260
+SHANGHAI_INDEX_SYMBOLS = {"000016", "000300", "000852", "000905"}
+SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+MARKET_CLOSE_TIME = datetime_time(15, 0)
 
 
-def fetch_public_stock_bars(symbol: str, name: str | None = None) -> list[PriceVolumeBar]:
+def fetch_public_stock_bars(
+    symbol: str,
+    name: str | None = None,
+    adjustment_type: str = "qfq",
+) -> list[PriceVolumeBar]:
+    if adjustment_type not in {"qfq", "none"}:
+        raise ValueError("复权类型只支持 qfq 或 none。")
     errors = []
-    for source in _kline_source_order():
+    for source in _kline_source_order(adjustment_type):
         try:
             if source == "sina":
-                return _fetch_sina_stock_bars(symbol, name)
-            if source == "tencent":
-                return _fetch_tencent_stock_bars(symbol, name)
+                bars = _fetch_sina_stock_bars(symbol, name)
+            elif source == "tencent":
+                bars = _fetch_tencent_stock_bars(symbol, name, adjustment_type)
+            else:
+                continue
+            bars = _exclude_incomplete_current_bar(bars)
+            if not bars:
+                raise DataRefreshError(f"{source} 未返回已完成的日线数据")
+            return bars
         except DataRefreshError as exc:
             errors.append(f"{source}：{exc}")
     raise DataRefreshError("；".join(errors) or f"未能获取 {symbol} 的有效日线数据")
+
+
+def _exclude_incomplete_current_bar(
+    bars: list[PriceVolumeBar],
+    now: datetime | None = None,
+) -> list[PriceVolumeBar]:
+    current = now or datetime.now(SHANGHAI_TIMEZONE)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=SHANGHAI_TIMEZONE)
+    else:
+        current = current.astimezone(SHANGHAI_TIMEZONE)
+    if current.time() >= MARKET_CLOSE_TIME:
+        return bars
+    # 仅剔除上海时区当天的动态 K 线，周末和历史日期不会被误删
+    return [bar for bar in bars if bar.trade_date != current.date()]
 
 
 def _fetch_sina_stock_bars(symbol: str, stock_name: str | None) -> list[PriceVolumeBar]:
@@ -62,11 +95,25 @@ def _fetch_sina_stock_bars(symbol: str, stock_name: str | None) -> list[PriceVol
     return bars
 
 
-def _fetch_tencent_stock_bars(symbol: str, stock_name: str | None) -> list[PriceVolumeBar]:
+def _fetch_tencent_stock_bars(
+    symbol: str,
+    stock_name: str | None,
+    adjustment_type: str = "qfq",
+) -> list[PriceVolumeBar]:
     market_symbol = _to_market_symbol(symbol)
-    payload = _fetch_json(_tencent_kline_url(market_symbol), "https://gu.qq.com/")
+    payload = _fetch_json(
+        _tencent_kline_url(market_symbol, adjustment_type),
+        "https://gu.qq.com/",
+    )
     data = payload.get("data", {}).get(market_symbol) if isinstance(payload, dict) else None
-    rows = data.get("qfqday") or data.get("day") if isinstance(data, dict) else None
+    if isinstance(data, dict):
+        rows = (
+            data.get("qfqday")
+            if adjustment_type == "qfq"
+            else data.get("day")
+        )
+    else:
+        rows = None
     if not rows:
         raise DataRefreshError(f"腾讯未返回 {symbol} 的有效日线数据")
 
@@ -150,6 +197,7 @@ def _fetch_json(url: str, referer: str):
         try:
             with urlopen(request, timeout=_request_timeout()) as response:
                 text = response.read().decode("utf-8", errors="replace")
+                _persist_raw_response(url, text)
                 break
         except OSError as exc:
             last_error = exc
@@ -164,6 +212,35 @@ def _fetch_json(url: str, referer: str):
         raise DataRefreshError("公开行情接口响应不是有效 JSON") from exc
 
 
+def _persist_raw_response(url: str, text: str) -> None:
+    raw_root = Path(os.getenv("PUBLIC_DATA_RAW_DIR", "data/raw/http"))
+    source = _source_name(url)
+    fetched_at = datetime.now().astimezone()
+    content_hash = sha256(text.encode("utf-8")).hexdigest()
+    target_dir = raw_root / source / fetched_at.strftime("%Y%m%d")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"{fetched_at.strftime('%H%M%S_%f')}_{content_hash[:16]}.json"
+    metadata = {
+        "schema_version": 1,
+        "source": source,
+        "url": url,
+        "fetched_at": fetched_at.isoformat(),
+        "content_sha256": content_hash,
+        "body": text,
+    }
+    temporary_path = target_path.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    temporary_path.replace(target_path)
+
+
+def _source_name(url: str) -> str:
+    if "sina.com.cn" in url:
+        return "sina"
+    if "gtimg.cn" in url or "qq.com" in url:
+        return "tencent"
+    return "public"
+
+
 def _sina_kline_url(market_symbol: str) -> str:
     query = urlencode(
         {
@@ -176,9 +253,13 @@ def _sina_kline_url(market_symbol: str) -> str:
     return f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?{query}"
 
 
-def _tencent_kline_url(market_symbol: str) -> str:
+def _tencent_kline_url(
+    market_symbol: str,
+    adjustment_type: str = "qfq",
+) -> str:
     days = int(os.getenv("PUBLIC_KLINE_DAYS", str(DEFAULT_KLINE_DAYS)))
-    query = urlencode({"param": f"{market_symbol},day,,,{days},qfq"})
+    suffix = ",qfq" if adjustment_type == "qfq" else ""
+    query = urlencode({"param": f"{market_symbol},day,,,{days}{suffix}"})
     return f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?{query}"
 
 
@@ -210,12 +291,18 @@ def _sina_stock_list_url(page: int, page_size: int) -> str:
 
 
 def _to_market_symbol(symbol: str) -> str:
+    # 常用宽基指数使用上海市场前缀，避免把 000300 等指数误作深圳股票。
+    if symbol in SHANGHAI_INDEX_SYMBOLS:
+        return f"sh{symbol}"
     if symbol.startswith(("5", "6", "9")):
         return f"sh{symbol}"
     return f"sz{symbol}"
 
 
-def _kline_source_order() -> list[str]:
+def _kline_source_order(adjustment_type: str = "qfq") -> list[str]:
+    # 新浪日线不提供与腾讯一致的前复权口径，模型序列禁止跨口径兜底。
+    if adjustment_type == "qfq":
+        return ["tencent"]
     source = os.getenv("PUBLIC_KLINE_SOURCE", "tencent").strip().lower()
     if source == "sina":
         return ["sina", "tencent"]
