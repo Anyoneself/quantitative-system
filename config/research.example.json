@@ -1,0 +1,33 @@
+{
+  "strategy": {
+    "lookback": 60,
+    "trend_window": 120,
+    "volatility_window": 20,
+    "rebalance_days": 20,
+    "max_positions": 5,
+    "max_weight": 0.2,
+    "gross_limit": 0.8,
+    "target_volatility": 0.12,
+    "min_average_amount": 20000000
+  },
+  "simulation": {
+    "initial_cash": 100000,
+    "commission_rate": 0.0003,
+    "min_commission": 5,
+    "stamp_duty_rate": 0.0005,
+    "slippage_rate": 0.001,
+    "participation_rate": 0.01,
+    "max_drawdown": 0.12,
+    "daily_loss_limit": 0.03,
+    "max_stale_days": 3
+  },
+  "validation": {
+    "train_days": 252,
+    "test_days": 63,
+    "min_oos_days": 126,
+    "min_folds": 3,
+    "min_trades": 10,
+    "min_sharpe": 0.5,
+    "bootstrap_samples": 400
+  }
+}

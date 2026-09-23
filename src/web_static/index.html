@@ -46,6 +46,14 @@
             <span class="nav-icon" aria-hidden="true">▣</span>
             <span>组合管理</span>
           </button>
+          <button class="nav-item" type="button" data-page="experiments">
+            <span class="nav-icon" aria-hidden="true">Σ</span>
+            <span>组合实验</span>
+          </button>
+          <button class="nav-item" type="button" data-page="client">
+            <span class="nav-icon" aria-hidden="true">⇄</span>
+            <span>客户端连接</span>
+          </button>
           <button class="nav-item" type="button" data-page="risk">
             <span class="nav-icon" aria-hidden="true">◇</span>
             <span>风险监控</span>
@@ -64,7 +72,7 @@
               <small>免登录数据源</small>
             </div>
           </div>
-          <p>辅助分析工具，不连接券商账户，不自动下单。</p>
+          <p>本机账户只读快照，实盘下单未启用。</p>
         </div>
       </aside>
 
@@ -715,6 +723,105 @@
             </section>
           </section>
 
+          <section class="page" id="experiments-page" data-page-panel="experiments">
+            <header class="page-heading">
+              <div><p class="eyebrow">PORTFOLIO RESEARCH</p><h1>组合实验</h1></div>
+              <span class="status-badge" id="experiment-mode">实盘禁用</span>
+            </header>
+            <form id="experiment-form" class="experiment-controls">
+              <label><span>数据</span><select id="experiment-source"><option value="demo">合成演示 · 非真实业绩</option><option value="file">历史数据快照</option></select></label>
+              <label id="experiment-file-label" class="hidden"><span>快照 JSON</span><input id="experiment-file" type="file" accept=".json,application/json" /></label>
+              <label><span>初始资金（元）</span><input id="experiment-cash" type="number" min="1000" max="1000000000000" step="1000" value="100000" required /></label>
+              <label><span>单证券上限</span><input id="experiment-weight" type="number" min="0.01" max="0.8" step="0.01" value="0.2" required /></label>
+              <label><span>回撤熔断阈值</span><input id="experiment-drawdown" type="number" min="0.01" max="1" step="0.01" value="0.12" required /></label>
+              <button id="experiment-submit" class="primary-button" type="submit">运行实验</button>
+            </form>
+            <div class="experiment-history">
+              <label for="experiment-history">实验记录</label>
+              <select id="experiment-history"><option value="">暂无实验</option></select>
+              <button id="experiment-download" class="secondary-button" type="button" disabled>导出报告</button>
+            </div>
+            <div id="experiment-error" class="error-state hidden" role="alert"></div>
+            <div id="experiment-loading" class="feature-loading hidden" role="status"><div class="loader"></div><strong>实验运行中</strong></div>
+            <div id="experiment-empty" class="experiment-empty"><h2>暂无组合实验</h2><p>实盘交易未启用。</p></div>
+            <section id="experiment-result" class="hidden">
+              <div class="experiment-status"><strong id="experiment-status"></strong><span id="experiment-id"></span></div>
+              <section class="result-metric-grid experiment-metrics" aria-label="组合实验指标">
+                <article class="result-metric"><span>样本外净收益</span><strong id="experiment-return">--</strong><small id="experiment-period">--</small></article>
+                <article class="result-metric"><span>最大回撤</span><strong id="experiment-max-dd">--</strong><small id="experiment-halt">--</small></article>
+                <article class="result-metric"><span>Sharpe</span><strong id="experiment-sharpe">--</strong><small id="experiment-trades">--</small></article>
+                <article class="result-metric"><span>双倍成本净收益</span><strong id="experiment-stress">--</strong><small id="experiment-benchmark">--</small></article>
+              </section>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>样本外净值</h2><div class="experiment-legend"><span>基础成本</span><span>双倍成本</span></div></header>
+                <canvas id="experiment-chart" aria-label="基础成本与双倍成本的样本外净值曲线"></canvas>
+              </section>
+              <section class="experiment-section">
+                <h2>研究验收</h2>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>检查</th><th>结果</th><th>观测值</th><th>阈值</th></tr></thead><tbody id="experiment-checks"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <h2>时间分段</h2>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>训练段</th><th>测试段</th><th>冻结窗口</th><th>净收益</th><th>最大回撤</th></tr></thead><tbody id="experiment-folds"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <h2>风控事件</h2><ul id="experiment-events"></ul>
+              </section>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>模拟订单</h2><span id="experiment-order-count"></span></header>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>信号日</th><th>成交日</th><th>证券</th><th>方向</th><th>申请 / 成交</th><th>价格</th><th>费用</th><th>状态</th></tr></thead><tbody id="experiment-orders"></tbody></table></div>
+                <div class="experiment-pagination"><button id="experiment-prev" type="button" title="上一页" aria-label="上一页">←</button><span id="experiment-page-count"></span><button id="experiment-next" type="button" title="下一页" aria-label="下一页">→</button></div>
+              </section>
+              <section class="experiment-section">
+                <h2>发布阻断项</h2><ul id="experiment-limitations"></ul>
+              </section>
+            </section>
+          </section>
+
+          <section class="page" id="client-page" data-page-panel="client">
+            <header class="page-heading">
+              <div><p class="eyebrow">LOCAL CLIENT</p><h1>同花顺连接</h1><p class="page-subtitle">平安证券 · 只读账户快照</p></div>
+              <span class="client-readonly">实盘下单未接入</span>
+            </header>
+            <section class="client-connection" aria-label="连接状态">
+              <div class="client-status-line"><h2 id="client-state">尚未检查</h2><span id="client-version">客户端版本 --</span></div>
+              <p id="client-message" role="status" aria-live="polite">--</p>
+              <div class="client-toolbar">
+                <button id="client-launch" type="button" class="primary-button" disabled>打开同花顺</button>
+                <button id="client-sync" type="button" class="secondary-button" disabled>同步账户</button>
+                <button id="client-check" type="button" class="icon-button" title="检查连接状态" aria-label="检查连接状态">↻</button>
+                <button id="client-permission" type="button" class="secondary-button hidden">申请辅助功能权限</button>
+                <label class="client-auto"><input id="client-auto" type="checkbox" /> 自动同步（30 秒）</label>
+                <button id="client-clear" type="button" class="icon-button" title="清空内存快照" aria-label="清空内存快照" disabled>×</button>
+              </div>
+              <p id="client-runtime" class="client-runtime hidden"></p>
+              <div id="client-error" class="error-state hidden" role="alert"></div>
+            </section>
+            <section class="client-snapshot" aria-label="账户快照">
+              <header class="client-status-line"><h2>账户快照</h2><span id="client-freshness">尚未同步</span></header>
+              <p id="client-captured" class="client-captured">--</p>
+              <div class="client-funds">
+                <div><span>总资产</span><strong id="client-assets">--</strong></div>
+                <div><span>持仓市值</span><strong id="client-market-value">--</strong></div>
+                <div><span>资金余额</span><strong id="client-cash">--</strong></div>
+                <div><span>可用金额</span><strong id="client-available">--</strong></div>
+                <div><span>可取金额</span><strong id="client-withdrawable">--</strong></div>
+              </div>
+              <div class="table-scroll"><table class="data-table workspace-table">
+                <thead><tr><th>证券</th><th>名称</th><th>数量</th><th>可用数量</th><th>市价</th><th>成本价</th><th>市值</th></tr></thead>
+                <tbody id="client-positions"><tr><td colspan="7">尚无经过校验的持仓快照。</td></tr></tbody>
+              </table></div>
+              <p class="client-boundary">来源：客户端显示值。账户唯一标识未经核实；快照与组合账本分开，不用于下单。</p>
+            </section>
+            <section class="client-capabilities" aria-label="接入范围">
+              <h2>接入范围</h2>
+              <dl><div><dt>客户端启动</dt><dd id="client-launch-capability">待检查</dd></div>
+                <div><dt>资金与持仓</dt><dd id="client-read-capability">待检查</dd></div>
+                <div><dt>自选股、行情流、成交回报</dt><dd>尚未接入</dd></div>
+                <div><dt>登录回调、下单、撤单</dt><dd>无已验证接口，已阻断</dd></div></dl>
+            </section>
+          </section>
+
           <section class="page" id="portfolios-page" data-page-panel="portfolios">
             <header class="page-heading">
               <div>
@@ -803,5 +910,7 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="/app.js?v=20260729-release-gate"></script>
+    <script src="/experiments.js"></script>
+    <script src="/client.js"></script>
   </body>
 </html>

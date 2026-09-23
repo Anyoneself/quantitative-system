@@ -44,7 +44,7 @@ class BacktestTest(unittest.TestCase):
         self.assertEqual(result.equity_curve[0].trade_date, bars[45].trade_date.isoformat())
 
     def test_default_final_liquidation_deducts_sell_fee(self) -> None:
-        bars = _build_backtest_bars(46)
+        bars = _build_backtest_bars(47)
         config = BacktestConfig(
             commission_rate=0,
             min_commission=0,
@@ -52,7 +52,9 @@ class BacktestTest(unittest.TestCase):
             slippage_rate=0,
         )
 
-        with patch("backtest.engine._build_historical_buy_advice", return_value=BUY_ADVICE):
+        with patch("backtest.engine._build_historical_buy_advice", return_value=BUY_ADVICE), patch(
+            "backtest.engine.build_sell_advice", return_value=HOLD_ADVICE,
+        ):
             result = run_backtest("600519", bars, "knn", config)
 
         buy_trade, sell_trade = result.trades
@@ -69,6 +71,25 @@ class BacktestTest(unittest.TestCase):
         self.assertEqual(result.open_position_count, 0)
         self.assertAlmostEqual(result.final_equity, expected_equity, places=2)
         self.assertAlmostEqual(sell_trade.fee, sell_trade.amount * 0.0005, delta=0.01)
+
+    def test_final_liquidation_respects_t_plus_one(self) -> None:
+        bars = _build_backtest_bars(46)
+        with patch("backtest.engine._build_historical_buy_advice", return_value=BUY_ADVICE):
+            result = run_backtest("600519", bars, "knn")
+        self.assertEqual([trade.side for trade in result.trades], ["BUY"])
+        self.assertEqual(result.open_position_count, 1)
+        self.assertTrue(any("T+1" in note for note in result.notes))
+
+    def test_final_liquidation_respects_limit_down(self) -> None:
+        bars = _build_backtest_bars(47)
+        price = price_limit_value(bars[-2].close, 0.1, "DOWN")
+        bars[-1] = _bar_with_prices(bars[-1], price, price)
+        with patch("backtest.engine._build_historical_buy_advice", return_value=BUY_ADVICE), patch(
+            "backtest.engine.build_sell_advice", return_value=HOLD_ADVICE,
+        ):
+            result = run_backtest("600519", bars, "knn")
+        self.assertEqual([trade.side for trade in result.trades], ["BUY"])
+        self.assertEqual(result.open_position_count, 1)
 
     def test_main_board_limit_up_skips_buy_but_growth_board_ten_percent_does_not(self) -> None:
         bars = _build_backtest_bars(46)

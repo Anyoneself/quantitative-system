@@ -101,6 +101,14 @@ function setupNavigation() {
       loadPortfolios(currentPortfolioId);
       return;
     }
+    if (currentPage === "experiments") {
+      loadExperimentHistory();
+      return;
+    }
+    if (currentPage === "client") {
+      loadClientConnection();
+      return;
+    }
     if (currentPage === "research" || currentPage === "backtest") {
       showToast("重新提交当前表单即可刷新最新公开行情结果。");
       return;
@@ -186,7 +194,7 @@ function setupMarketActions() {
 
 function navigateTo(page) {
   const targetPage = page === "risk" ? "overview" : page;
-  if (!["overview", "market", "research", "backtest", "portfolios"].includes(targetPage)) return;
+  if (!["overview", "market", "research", "backtest", "portfolios", "experiments", "client"].includes(targetPage)) return;
   if (currentPage === "market" && targetPage !== "market") {
     stopMarketUpdates();
   }
@@ -207,6 +215,11 @@ function navigateTo(page) {
   if (targetPage === "portfolios" && !portfoliosLoaded) {
     loadPortfolios();
   }
+  if (targetPage === "experiments") {
+    loadExperimentHistory();
+    requestAnimationFrame(drawExperimentChart);
+  }
+  if (targetPage === "client") loadClientConnection();
   if (page === "risk") {
     window.setTimeout(() => {
       document.querySelector("#risk-panel")?.scrollIntoView({ behavior: "smooth", block: "center" });

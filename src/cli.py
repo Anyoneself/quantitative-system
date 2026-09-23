@@ -15,6 +15,9 @@ from backtest.formatter import format_backtest_result
 from data.errors import DataRefreshError
 from data.source import fetch_bars
 from output.formatter import format_advice, format_sell_advice
+from research.config import parse_config
+from research.dataset import build_demo_dataset, load_dataset
+from research.experiment import run_experiment, save_experiment
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_backtest(args)
     if args.command == "evaluate":
         return _run_evaluate(args)
+    if args.command == "research":
+        return _run_research(args)
 
     parser.print_help()
     return 1
@@ -93,6 +98,13 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("symbol", help="股票代码，例如 600519")
     evaluate_parser.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="robust_ensemble", help="机器学习算法")
     evaluate_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
+    research_parser = subparsers.add_parser("research", help="运行可复现的组合走步验证和成本压力测试")
+    dataset_group = research_parser.add_mutually_exclusive_group(required=True)
+    dataset_group.add_argument("--dataset", help="含历史证券池快照的本地 JSON 行情文件")
+    dataset_group.add_argument("--demo", action="store_true", help="使用合成数据验收工程，不代表真实业绩")
+    research_parser.add_argument("--config", help="研究配置 JSON，默认使用保守仓位和风险阈值")
+    research_parser.add_argument("--output", default="data/experiments", help="实验留档根目录")
+    research_parser.add_argument("--format", choices=["text", "json"], default="text")
     return parser
 
 
@@ -224,6 +236,37 @@ def _run_evaluate(args: argparse.Namespace) -> int:
         return 1
 
     print(_format_evaluation_result(symbol, result, args.format))
+    return 0
+
+
+def _run_research(args: argparse.Namespace) -> int:
+    try:
+        dataset = build_demo_dataset() if args.demo else load_dataset(args.dataset)
+        config_payload = json.loads(Path(args.config).read_text(encoding="utf-8")) if args.config else {}
+        strategy, simulation, validation = parse_config(config_payload)
+        report = run_experiment(dataset, strategy, simulation, validation)
+        output = save_experiment(report, dataset, args.output).resolve()
+    except (OSError, ValueError, DataRefreshError) as exc:
+        print(f"组合研究失败：{exc}", file=sys.stderr)
+        return 1
+    summary = {
+        "report_path": str(output / "report.json"), "summary": report["out_of_sample"]["summary"],
+        "research_status": report["research_status"], "release_status": report["release_status"],
+        "synthetic": report["synthetic"], "live_trading_enabled": False,
+    }
+    if args.format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False))
+    else:
+        metrics = summary["summary"]
+        print("\n".join([
+            f"数据类型：{'合成演示，非真实业绩' if dataset.synthetic else '外部历史快照'}",
+            f"样本外：{metrics['days']} 日，{metrics['trade_count']} 笔成交",
+            f"成本后收益：{metrics['total_return']:.2%}；最大回撤：{metrics['max_drawdown']:.2%}",
+            f"研究检查：{report['research_status']}",
+            f"发布状态：{report['release_status']}；实盘交易禁用",
+            f"完整报告：{output / 'report.md'}",
+            f"数据、订单、净值与配置：{output}",
+        ]))
     return 0
 
 

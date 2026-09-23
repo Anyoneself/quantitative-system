@@ -25,7 +25,7 @@ class MlPrediction:
     sample_count: int
     positive_count: int
     neighbor_count: int
-    horizon_days: int = 1
+    horizon_days: int = 2
 
 
 @dataclass(frozen=True)
@@ -97,11 +97,12 @@ def predict_next_day_buy_probability(
 
 
 def prediction_horizon_days(algorithm: str) -> int:
-    return 5 if algorithm in {"robust_ensemble", "time_decay_knn"} else 1
+    # A 股次日开盘买入后不能当天卖出，最短标签终点为信号后的第二个交易日。
+    return 5 if algorithm in {"robust_ensemble", "time_decay_knn"} else 2
 
 
 def prediction_target_return(algorithm: str) -> float:
-    return 0.012 if prediction_horizon_days(algorithm) > 1 else 0.0
+    return 0.012 if algorithm in {"robust_ensemble", "time_decay_knn"} else 0.0
 
 
 def calculate_forward_outcome(
@@ -114,8 +115,8 @@ def calculate_forward_outcome(
     slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
     max_drawdown_rate: float = DEFAULT_MAX_DRAWDOWN_RATE,
 ) -> ForwardOutcome | None:
-    if horizon_days < 1:
-        raise ValueError("预测周期必须至少为 1 个交易日。")
+    if horizon_days < 2:
+        raise ValueError("A 股 T+1 标签周期必须至少为 2 个交易日。")
     if signal_index < 0 or signal_index + horizon_days >= len(bars):
         raise ValueError("信号后的行情不足，无法计算完整持有期结果。")
     if min(commission_rate, stamp_duty_rate, slippage_rate, max_drawdown_rate) < 0:

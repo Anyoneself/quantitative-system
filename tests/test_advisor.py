@@ -104,7 +104,7 @@ class AdvisorTest(unittest.TestCase):
         prediction = predict_next_day_buy_probability(bars, "knn")
 
         self.assertIsNotNone(prediction)
-        self.assertEqual(prediction.sample_count, 229)
+        self.assertEqual(prediction.sample_count, 228)
         self.assertEqual(prediction.neighbor_count, 15)
 
     def test_yearline_below_adds_risk_and_score_penalty(self) -> None:
@@ -308,7 +308,8 @@ class AdvisorTest(unittest.TestCase):
         self.assertIsNone(advice.holding_return)
         self.assertTrue(any("未输入持仓成本" in item for item in advice.risks))
 
-    def test_scan_top_stocks_sorts_by_score(self) -> None:
+    @patch("analysis.service.fetch_fund_flow_bars", return_value=[])
+    def test_scan_top_stocks_sorts_by_score(self, _fetch_fund_flow) -> None:
         def fake_analyzer(symbol, algorithm):
             bars = _build_bars_for_limit_up()
             advice = build_advice(symbol, bars, "knn")

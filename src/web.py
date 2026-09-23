@@ -18,12 +18,14 @@ from api.portfolio import (
     build_refresh_portfolio_response,
 )
 from api.research import build_backtest_response, build_evaluation_response
+from api.experiments import build_experiment_response, list_experiments, load_experiment
 from analysis.ml_model import ALGORITHMS
 from analysis.market_scanner import MARKET_SCANNER
 from analysis.scanner import parse_symbols, scan_top_stocks
 from analysis.service import analyze_stock_sell, build_advice
 from data.errors import DataRefreshError
 from data.source import fetch_bars
+from desktop.tonghuashun import BridgeError, TonghuashunBridge, validate_local_request
 from output.formatter import advice_to_dict
 from storage.migrations import initialize_database
 
@@ -57,7 +59,9 @@ def _create_server(host: str, port: int) -> ThreadingHTTPServer:
 
     for candidate_port in candidate_ports:
         try:
-            return ThreadingHTTPServer((host, candidate_port), QuantWebHandler)
+            server = ThreadingHTTPServer((host, candidate_port), QuantWebHandler)
+            server.desktop_bridge = TonghuashunBridge()
+            return server
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
                 raise
@@ -77,6 +81,10 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
     def end_headers(self) -> None:
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
@@ -90,6 +98,9 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
+        if path.startswith("/api/client/"):
+            self._handle_client_bridge(path.removeprefix("/api/client/"))
+            return
         if path == "/api/advise":
             self._handle_advise()
             return
@@ -112,6 +123,9 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
         if path == "/api/backtest":
             self._handle_backtest()
             return
+        if path == "/api/experiments":
+            self._handle_experiment(create=True)
+            return
         if path == "/api/portfolios":
             self._handle_create_portfolio()
             return
@@ -127,6 +141,9 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
         path = parsed.path
+        if path == "/api/client":
+            self._handle_client_bridge()
+            return
         if path == "/api/health":
             self._handle_health()
             return
@@ -135,6 +152,9 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/portfolios":
             self._handle_list_portfolios()
+            return
+        if path == "/api/experiments" or path.startswith("/api/experiments/"):
+            self._handle_experiment(run_id=path.removeprefix("/api/experiments/") if path != "/api/experiments" else None)
             return
         portfolio_route = _portfolio_route(path)
         if portfolio_route and portfolio_route[1] == "":
@@ -147,6 +167,43 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             self._handle_market_scan_stream()
             return
         super().do_GET()
+
+    def _handle_client_bridge(self, action: str | None = None) -> None:
+        bridge = self.server.desktop_bridge
+        try:
+            if len(self.headers.get_all("Host", [])) != 1:
+                raise BridgeError("LOCAL_ONLY", "本机请求 Host 无效。")
+            validate_local_request(
+                bind_host=self.server.server_address[0], peer_host=self.client_address[0],
+                port=self.server.server_address[1], headers=self.headers,
+                mutation=action is not None, token=bridge.token,
+            )
+        except BridgeError as exc:
+            self.close_connection = True
+            self._send_json({"ok": False, "error": str(exc), "code": exc.code}, status=403)
+            return
+        try:
+            if action is not None:
+                self.connection.settimeout(5)
+                lengths = self.headers.get_all("Content-Length", [])
+                if (len(lengths) != 1 or not lengths[0].isdigit()
+                        or not 0 < int(lengths[0]) <= 4096 or self.headers.get("Transfer-Encoding")):
+                    raise ValueError("本机操作请求体无效。")
+                payload = self._read_json()
+                if payload:
+                    raise ValueError("本机操作不接受登录凭据、URL 或其他参数。")
+                state = bridge.perform(action)
+            else:
+                state = bridge.status()
+            self._send_json({"ok": True, "connection": state})
+        except BridgeError as exc:
+            response = {"ok": False, "error": str(exc), "code": exc.code}
+            if exc.code != "BUSY":
+                response["connection"] = bridge.status()
+            self._send_json(response, status=409 if exc.code in ("BUSY", "ACTION_UNAVAILABLE") else 422)
+        except (ValueError, TimeoutError):
+            self.close_connection = True
+            self._send_json({"ok": False, "error": "本机操作请求无效。"}, status=400)
 
     def _handle_advise(self) -> None:
         try:
@@ -383,6 +440,25 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": str(exc)}, status=422)
         except DataRefreshError as exc:
             self._send_json({"ok": False, "error": str(exc)}, status=502)
+
+    def _handle_experiment(self, create: bool = False, run_id: str | None = None) -> None:
+        try:
+            if create:
+                self._send_json(build_experiment_response(self._read_json()), status=201)
+            elif run_id is not None:
+                self._send_json({"ok": True, "experiment": load_experiment(run_id)})
+            else:
+                self._send_json({"ok": True, "experiments": list_experiments()})
+        except json.JSONDecodeError:
+            self._send_json({"ok": False, "error": "JSON 请求或报告无效。"}, status=400)
+        except (ValueError, DataRefreshError) as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=422)
+        except LookupError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=404)
+        except RuntimeError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=409)
+        except OSError:
+            self._send_json({"ok": False, "error": "实验文件读取或留档失败。"}, status=503)
 
     def _handle_market_scan_stream(self) -> None:
         self.send_response(200)

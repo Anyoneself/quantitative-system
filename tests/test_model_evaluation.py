@@ -18,6 +18,7 @@ from analysis.ml_model import (
     _standardize,
     calculate_forward_outcome,
     predict_next_day_buy_probability,
+    prediction_horizon_days,
 )
 from data.models import PriceVolumeBar
 
@@ -27,9 +28,10 @@ class ModelOutcomeTest(unittest.TestCase):
         bars = [
             _bar(0, open_price=99.0, high=101.0, low=98.0, close=100.0),
             _bar(1, open_price=110.0, high=111.0, low=104.0, close=105.0),
+            _bar(2, open_price=105.0, high=106.0, low=104.0, close=105.0),
         ]
 
-        outcome = calculate_forward_outcome(bars, 0, 1, min_return=0.0)
+        outcome = calculate_forward_outcome(bars, 0, 2, min_return=0.0)
 
         expected_entry = 110.0 * (1 + DEFAULT_SLIPPAGE_RATE)
         expected_exit = 105.0 * (1 - DEFAULT_SLIPPAGE_RATE)
@@ -48,9 +50,10 @@ class ModelOutcomeTest(unittest.TestCase):
         bars = [
             _bar(0, open_price=99.0, high=101.0, low=98.0, close=100.0),
             _bar(1, open_price=110.0, high=111.0, low=104.0, close=105.0),
+            _bar(2, open_price=105.0, high=106.0, low=104.0, close=105.0),
         ]
 
-        outcome = calculate_forward_outcome(bars, 0, 1, min_return=0.0)
+        outcome = calculate_forward_outcome(bars, 0, 2, min_return=0.0)
 
         self.assertGreater(bars[1].close / bars[0].close - 1, 0)
         self.assertLess(outcome.net_return, 0)
@@ -60,9 +63,10 @@ class ModelOutcomeTest(unittest.TestCase):
         bars = [
             _bar(0, open_price=10.0, high=10.2, low=9.8, close=10.0),
             _bar(1, open_price=10.0, high=10.2, low=9.8, close=10.1, volume=0),
+            _bar(2, open_price=10.0, high=10.2, low=9.8, close=10.1),
         ]
 
-        outcome = calculate_forward_outcome(bars, 0, 1, min_return=0.0)
+        outcome = calculate_forward_outcome(bars, 0, 2, min_return=0.0)
 
         self.assertIsNone(outcome)
 
@@ -70,9 +74,10 @@ class ModelOutcomeTest(unittest.TestCase):
         bars = [
             _bar(0, open_price=10.0, high=10.1, low=9.9, close=10.0),
             _bar(1, open_price=11.0, high=11.0, low=11.0, close=11.0),
+            _bar(2, open_price=11.0, high=11.2, low=10.8, close=11.0),
         ]
 
-        outcome = calculate_forward_outcome(bars, 0, 1, min_return=0.0)
+        outcome = calculate_forward_outcome(bars, 0, 2, min_return=0.0)
 
         self.assertIsNone(outcome)
 
@@ -91,12 +96,13 @@ class ModelOutcomeTest(unittest.TestCase):
         bars = [
             _bar(0, open_price=10.0, high=10.2, low=9.8, close=10.0),
             _bar(1, open_price=10.0, high=10.01, low=9.9, close=10.0),
+            _bar(2, open_price=10.0, high=10.01, low=9.9, close=10.0),
         ]
 
         outcome = calculate_forward_outcome(
             bars,
             0,
-            1,
+            2,
             min_return=0.0,
             slippage_rate=0.10,
         )
@@ -107,7 +113,7 @@ class ModelOutcomeTest(unittest.TestCase):
 
     def test_weighted_knn_positive_count_is_actual_neighbor_count(self) -> None:
         bars = _build_bars(100)
-        samples = _build_samples(bars, 1, 0.0)
+        samples = _build_samples(bars, 2, 0.0)
         predict_features = _build_features(bars, len(bars) - 1)
         normalized_samples, normalized_predict = _standardize(samples, predict_features)
         neighbor_count = _choose_neighbor_count(len(samples))
@@ -128,6 +134,11 @@ class ModelOutcomeTest(unittest.TestCase):
         self.assertIsNotNone(prediction)
         self.assertEqual(prediction.neighbor_count, 0)
         self.assertEqual(prediction.positive_count, 0)
+
+    def test_a_share_labels_cannot_sell_on_buy_day(self) -> None:
+        self.assertEqual(prediction_horizon_days("knn"), 2)
+        with self.assertRaisesRegex(ValueError, "T\\+1"):
+            calculate_forward_outcome(_build_bars(5), 0, 1, 0)
 
 
 class WalkForwardEvaluationTest(unittest.TestCase):

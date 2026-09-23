@@ -206,14 +206,19 @@ def run_backtest(
 
     if position > 0 and config.liquidate_at_end:
         last_bar = bars[-1]
-        cash_after, realized_pnl, liquidation_trade = _sell_at_close(
-            last_bar,
-            cash,
-            position,
-            position_cost,
-            config,
-            "回测期末按最后收盘价强制平仓",
-            signal_date=last_bar.trade_date.isoformat(),
+        # 期末平仓不能豁免 T+1 或跌停约束；无法卖出的头寸继续按收盘价估值。
+        can_liquidate = (
+            entry_trade_index is not None
+            and entry_trade_index < len(bars) - 1
+            and not is_limit_price(
+                last_bar.close, bars[-2].close, symbol, last_bar.name, last_bar.trade_date, "DOWN",
+            )
+        )
+        cash_after, realized_pnl, liquidation_trade = (
+            _sell_at_close(
+                last_bar, cash, position, position_cost, config,
+                "回测期末按最后收盘价强制平仓", signal_date=last_bar.trade_date.isoformat(),
+            ) if can_liquidate else (cash, 0.0, None)
         )
         if liquidation_trade:
             trades.append(liquidation_trade)
@@ -241,7 +246,7 @@ def run_backtest(
             )
             notes.append("回测期末持仓已按最后收盘价考虑滑点和卖出费用后强制平仓。")
         else:
-            notes.append("回测期末行情不可成交，持仓未能强制平仓，期末权益仍按最后收盘价估值。")
+            notes.append("回测期末因 T+1、跌停或行情不可成交，持仓未能强制平仓，期末权益仍按最后收盘价估值。")
     elif position > 0:
         notes.append("配置为期末不强制平仓，未平仓头寸按最后收盘价估值且未扣除退出费用。")
 
