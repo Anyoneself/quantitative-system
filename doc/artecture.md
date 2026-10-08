@@ -7,7 +7,7 @@
 ```text
 quantitative-system/
 ├── AGENTS.md                        # 开发协作规范
-├── README.md                        # 项目定位、当前能力与使用边界
+├── README.md                        # 项目定位、快速启动、当前能力与使用边界
 ├── pyproject.toml                   # Python 项目元信息、依赖与应用入口
 ├── Dockerfile                       # 容器镜像构建、运行用户与健康检查
 ├── docker-compose.yml               # 容器服务、端口、环境变量与数据卷配置
@@ -22,6 +22,7 @@ quantitative-system/
 │   └── artecture.md                 # 本文档：目录结构及文件职责
 ├── scripts/                         # 启动与验收脚本
 │   ├── quant                       # 本地应用启动入口，分派命令行与 Web 服务
+│   ├── quant.cmd                    # 同一入口的 Windows 批处理版本，供 PowerShell 与 cmd 使用
 │   ├── docker-entrypoint.sh         # 容器启动前初始化数据库，再启动 Web 服务
 │   ├── check_research_ui.cjs        # 组合实验页面的桌面、手机与交互验收
 │   └── check_client_ui.cjs          # 只读连接页面的离线状态、过期、安全文本及自动同步测试
@@ -88,7 +89,7 @@ quantitative-system/
 │   │   ├── __init__.py              # 输出包标识
 │   │   └── formatter.py             # 买入观察和卖出风险结果的文本与 JSON 输出
 │   └── web_static/                 # 原生 Web 前端
-│       ├── index.html              # 页面结构、导航、表单、表格与图表容器
+│       ├── index.html              # 页面结构、导航、系统设置与客户端下载入口、表单、表格与图表容器
 │       ├── styles.css              # 页面样式、布局与响应式适配
 │       ├── app.js                  # 总览、行情、模型验证、单股回测与组合管理交互
 │       ├── experiments.js          # 组合实验提交、结果图表、订单翻页与报告导出
@@ -105,6 +106,7 @@ quantitative-system/
     ├── test_portfolio.py            # 组合交易、现金持仓重放、净值与幂等行为测试
     ├── test_research.py             # 历史快照、组合执行、风控、未来数据隔离与实验复现测试
     ├── test_risk.py                 # 组合风险指标、样本不足与风险等级测试
+    ├── test_settings_page.py        # 系统设置页导航、官方客户端下载链接与只读桥边界测试
     ├── test_storage.py              # 数据库迁移、记录校验与存储读写测试
     └── test_web.py                  # HTTP 请求 JSON 与编码校验测试
 ```

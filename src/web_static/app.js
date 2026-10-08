@@ -194,7 +194,7 @@ function setupMarketActions() {
 
 function navigateTo(page) {
   const targetPage = page === "risk" ? "overview" : page;
-  if (!["overview", "market", "research", "backtest", "portfolios", "experiments", "client"].includes(targetPage)) return;
+  if (!["overview", "market", "research", "backtest", "portfolios", "experiments", "client", "settings"].includes(targetPage)) return;
   if (currentPage === "market" && targetPage !== "market") {
     stopMarketUpdates();
   }
