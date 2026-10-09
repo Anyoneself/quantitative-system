@@ -52,6 +52,64 @@ Quantitative-System 是一个面向 A 股的本地股票分析助手，围绕两
 
 同花顺启动、权限、账户同步、自选分组同步及公开持仓行情授权集中在系统设置。持仓证券代码只在用户允许后发送到腾讯查询，不发送账户金额、数量或登录信息。同步与建议仅供人工参考，不自动下单。
 
+## 快速启动
+
+### 环境要求
+
+Python 3.10 及以上；机器学习依赖 scikit-learn，安装项目时会自动安装。Windows 还需要 IANA 时区数据，以支持 `ZoneInfo("Asia/Shanghai")`。macOS 与 Linux 通常自带时区数据库。浏览器验收脚本额外需要 Node.js 与 Playwright。
+
+```bash
+python -m pip install tzdata   # 仅 Windows 需要
+```
+
+### 启动 Web 界面
+
+```bash
+git clone https://github.com/Anyoneself/quantitative-system.git
+cd quantitative-system
+python -m pip install -e .
+export PYTHONPATH=src          # Windows PowerShell：$env:PYTHONPATH = "src"
+python -m web                  # 默认 http://127.0.0.1:8000
+```
+
+浏览器打开 <http://127.0.0.1:8000> 即可使用；左侧边栏可进入总览、行情中心、买入卖出、自动化交易与系统设置。实盘启动尚未接通。
+
+- 首次启动会自动初始化数据库，默认落在 `data/app/quantitative_system.db`，可用 `QUANT_DB_PATH` 指定其他位置。
+- 默认端口被占用时会自动顺延尝试 8001 至 8010；也可以显式指定，例如 `python -m web --host 127.0.0.1 --port 8080`。
+- 服务默认只监听本机回环地址，不对外网开放。
+- macOS 与 Linux 还可以用 `./scripts/quant web` 启动，Windows 在 Git Bash 中用法相同，在 PowerShell 或 cmd 中则用 `scripts\quant.cmd web`；两者都会自动设置 `PYTHONPATH`。
+- 安装为本地命令后可直接使用 `quant-web`：`python -m pip install -e .`。
+
+### 使用命令行
+
+```bash
+python -m cli advise 600519                  # 单股买卖观察
+python -m cli sell 600519 --cost-price 1500  # 持仓卖出风险
+python -m cli backtest 600519                # 单股回测
+python -m cli evaluate 600519                # 走步验证与样本外表现
+python -m cli scan --pool-file config/stock_pool.example.txt --once
+python -m cli research --demo                # 组合实验（合成数据，不代表真实业绩）
+```
+
+macOS 与 Linux 同样可以用 `./scripts/quant advise 600519` 等形式调用，Windows 用 `scripts\quant.cmd advise 600519`。`--demo` 使用合成数据，只用于验收工程链路，不是实际业绩。
+
+### 使用容器
+
+```bash
+docker compose up --build
+```
+
+服务地址同为 <http://127.0.0.1:8000>；绑定地址与端口通过 `.env` 中的 `QUANT_WEB_BIND`、`QUANT_WEB_PORT` 调整（参考 `.env.example`），数据保存在 `quant-data` 卷。容器启动前会先执行幂等数据库迁移。
+
+### 运行测试
+
+```bash
+export PYTHONPATH=src          # Windows PowerShell：$env:PYTHONPATH = "src"
+python -m unittest discover -s tests -t tests
+```
+
+上述命令覆盖数据质量、分析、回测、组合实验、存储、接口与页面结构等测试。项目结构与各文件职责见 `doc/artecture.md`。
+
 ## 保留的底层能力
 
 ### 整理可信的研究数据
@@ -123,6 +181,10 @@ Quantitative-System 是一个面向 A 股的本地股票分析助手，围绕两
 有效快照中的股票可带入行情分析，持仓同时带入正数成本及数量。切换至自选股会清除之前的持仓输入，过期快照禁止带入；账户与行情研究仍保持分离，不自动生成交易。两类自动读取互斥，依赖对应客户端页面就绪，不会在后台切页、输入密码或执行任何交易。
 
 当前适配 macOS 同花顺 5.3.5（7.0.62）的只读页面结构，客户端版本变化、权限不足、页面未就绪、金额隐藏或持仓市值无法核对时停止更新。这里同步的是客户端显示值，不保证行情实时性，也不将界面读取等同于官方账户接口。
+
+### 系统设置
+
+「系统设置」页集中本机环境说明，并提供同花顺客户端官方下载中心的 macOS 与 Windows 下载链接。链接只是来源指引，下载与安装由本机浏览器和用户自行完成；页面同时标明只读连接当前仅适配 macOS 的「应用程序/同花顺.app」，Windows 客户端尚不能被识别。
 
 ## 当前边界
 

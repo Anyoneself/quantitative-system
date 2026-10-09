@@ -9,7 +9,7 @@
 ```text
 quantitative-system/
 ├── AGENTS.md                        # 开发协作规范
-├── README.md                        # 项目定位、当前能力与使用边界
+├── README.md                        # 项目定位、快速启动、当前能力与使用边界
 ├── pyproject.toml                   # Python 项目元信息、依赖与应用入口
 ├── Dockerfile                       # 容器镜像构建、运行用户与健康检查
 ├── docker-compose.yml               # 容器服务、端口、环境变量与数据卷配置
@@ -24,6 +24,7 @@ quantitative-system/
 │   └── artecture.md                 # 本文档：目录结构及文件职责
 ├── scripts/                         # 启动与验收脚本
 │   ├── quant                       # 优先使用项目虚拟环境，分派命令行与 Web 服务
+│   ├── quant.cmd                    # 同一入口的 Windows 批处理版本，供 PowerShell 与 cmd 使用
 │   ├── docker-entrypoint.sh         # 容器启动前初始化数据库，再启动 Web 服务
 │   ├── benchmark_market_scan.py    # 固定合成I/O场景比较4/8并发与重复扫描缓存，不代表实际市场耗时
 │   ├── check_research_ui.cjs        # 旧组合实验页面验收脚本，界面入口已停用，不属于当前五页验收
@@ -108,7 +109,7 @@ quantitative-system/
 │   │   ├── __init__.py              # 输出包标识
 │   │   └── formatter.py             # 买入观察和卖出风险结果的文本与 JSON 输出
 │   └── web_static/                 # 原生 Web 前端
-│       ├── index.html              # 总览/行情/买卖/自动化/设置五页；旧模块标记隐藏且不可交互
+│       ├── index.html              # 总览/行情/买卖/自动化/设置五页及官方客户端下载；旧模块隐藏且不可交互
 │       ├── styles.css              # 页面样式、布局与响应式适配
 │       ├── app.js                  # 五页导航、候选榜单及行内折叠详情、持仓卖出建议、图表、失败和过期状态；旧页面函数不再初始化
 │       ├── experiments.js          # 保留的旧实验与共享图表交互，不再由当前网页加载
@@ -139,6 +140,7 @@ quantitative-system/
     ├── test_operational.py          # Given/When/Then 场景：数据体检、独立对账、存档中断损坏、恢复、旧格式迁移及心跳状态
     ├── test_monitoring.py           # Given/When/Then 场景：基准对齐、样本边界、执行体检、风控优先、读写冲突及采集窗口
     ├── test_risk.py                 # 组合风险指标、样本不足与风险等级测试
+    ├── test_settings_page.py        # 系统设置页导航、官方客户端下载链接与只读桥边界测试
     ├── test_storage.py              # 数据库迁移、记录校验与存储读写测试
     └── test_web.py                  # 请求编码、算法目录一致性、单股算法分发/真实训练与依赖错误测试
 ```
