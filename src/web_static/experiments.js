@@ -130,7 +130,14 @@ function renderExperiment(report) {
   setText("#experiment-halt", metrics.halted ? "已触发永久熔断" : "未触发永久熔断");
   setText("#experiment-trades", `${metrics.trade_count} 笔成交 · 费用 ${formatCurrency(metrics.fees)}`);
   setText("#experiment-benchmark", `基准毛收益 ${formatOptionalPercent(report.benchmark.total_return)}`);
-  const percentChecks = new Set(["net_return", "benchmark", "drawdown", "cost_stress", "confidence", "positive_folds"]);
+  setText("#holdout-return", formatOptionalPercent(report.holdout?.summary.total_return));
+  setText("#holdout-stress", formatOptionalPercent(report.holdout?.cost_stress.total_return));
+  setText("#holdout-drawdown", formatOptionalPercent(report.holdout?.summary.max_drawdown));
+  setText("#holdout-period", report.holdout
+    ? `${report.holdout.start} 至 ${report.holdout.end} · 参数冻结 · 资金与风控状态连续`
+    : "该历史报告不含最终留出期。");
+  const percentChecks = new Set(["net_return", "benchmark", "drawdown", "cost_stress", "confidence", "positive_folds",
+    "holdout_return", "holdout_stress", "holdout_confidence"]);
   const checks = document.querySelector("#experiment-checks");
   checks.replaceChildren();
   report.checks.forEach((item) => {
@@ -154,9 +161,48 @@ function renderExperiment(report) {
     ? result.risk_events.map((item) => `${item.date} · ${eventNames[item.kind] || item.kind}${item.value == null ? "" : ` · ${formatOptionalPercent(item.value)}`}`)
     : ["无触发事件"]);
   renderExperimentOrders();
+  renderResearchAudit("experiment", report.data_audit);
+  renderPnlAttribution("experiment", result.reconciliation);
   renderList("#experiment-limitations", report.limitations);
   setExperimentState("result");
   requestAnimationFrame(drawExperimentChart);
+}
+
+function renderResearchAudit(prefix, audit) {
+  const statuses = { BLOCKED: "存在阻断项", REVIEW_REQUIRED: "待独立核验" };
+  setText(`#${prefix}-audit-status`, statuses[audit?.status] || "尚无体检记录");
+  const table = document.querySelector(`#${prefix}-data-checks`);
+  table.replaceChildren();
+  (audit?.checks || []).forEach((item) => {
+    const row = table.insertRow();
+    [item.name, item.passed ? "规则通过" : "未通过 / 未核验", item.detail].forEach((value) => appendCell(row, value));
+    row.cells[1].className = item.passed ? "positive" : "negative";
+  });
+  if (!audit) return appendEmptyRow(table, 3, "旧记录尚无数据体检");
+  const details = [
+    ["行情来源", audit.synthetic ? "合成样本" : "提供方声明", audit.data_source || "旧记录未提供"],
+    ["声明日历", audit.calendar_source || "无独立来源", audit.calendar_status],
+    ["基准缺日", audit.missing_benchmark_dates.length, audit.missing_benchmark_dates.slice(0, 20).join("、") || "未检出"],
+    ["非声明交易日", audit.unexpected_benchmark_dates.length, audit.unexpected_benchmark_dates.slice(0, 20).join("、") || "未检出"],
+    ...audit.missing_member_bars.map((item) => [`${item.symbol} 行情缺日`, item.count, item.dates.join("、")]),
+    ...audit.price_jumps.map((item) => [`${item.symbol} 开盘跳变`, item.date, formatOptionalPercent(item.open_gap)]),
+  ];
+  details.forEach((values) => {
+    const row = table.insertRow();
+    values.forEach((value) => appendCell(row, value));
+  });
+}
+
+function renderPnlAttribution(prefix, reconciliation) {
+  setText(`#${prefix}-reconciliation`, reconciliation?.status === "BALANCED" ? "独立对账平衡" : "尚未对账");
+  const table = document.querySelector(`#${prefix}-attribution`);
+  table.replaceChildren();
+  (reconciliation?.attribution || []).forEach((item) => {
+    const row = table.insertRow();
+    [item.symbol, ...["realized_pnl", "unrealized_pnl", "net_pnl", "fees"].map((key) => formatCurrency(item[key]))]
+      .forEach((value) => appendCell(row, value));
+  });
+  if (!table.rows.length) appendEmptyRow(table, 5, "暂无成交归因");
 }
 
 function renderExperimentOrders() {

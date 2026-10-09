@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="QuantLab 是一个面向 A 股的本地量化分析、策略回测与风险观察工具。"
+      content="QuantLab 提供账户总览、股票买入候选和持仓卖出建议。"
     />
     <title>QuantLab · 量化投资工作台</title>
     <link rel="stylesheet" href="/styles.css?v=20260729-release-gate" />
@@ -34,34 +34,18 @@
             <span class="nav-icon" aria-hidden="true">⌁</span>
             <span>行情中心</span>
           </button>
-          <button class="nav-item" type="button" data-page="research">
-            <span class="nav-icon" aria-hidden="true">⌬</span>
-            <span>策略研究</span>
-          </button>
-          <button class="nav-item" type="button" data-page="backtest">
-            <span class="nav-icon" aria-hidden="true">◷</span>
-            <span>回测分析</span>
-          </button>
-          <button class="nav-item" type="button" data-page="portfolios">
-            <span class="nav-icon" aria-hidden="true">▣</span>
-            <span>组合管理</span>
-          </button>
-          <button class="nav-item" type="button" data-page="experiments">
-            <span class="nav-icon" aria-hidden="true">Σ</span>
-            <span>组合实验</span>
-          </button>
-          <button class="nav-item" type="button" data-page="client">
+          <button class="nav-item" type="button" data-page="trade">
             <span class="nav-icon" aria-hidden="true">⇄</span>
-            <span>客户端连接</span>
+            <span>买入卖出</span>
           </button>
-          <button class="nav-item" type="button" data-page="risk">
-            <span class="nav-icon" aria-hidden="true">◇</span>
-            <span>风险监控</span>
+          <button class="nav-item" type="button" data-page="automation">
+            <span class="nav-icon" aria-hidden="true">⟳</span>
+            <span>自动化交易</span>
           </button>
         </nav>
 
         <div class="sidebar-bottom">
-          <button class="nav-item planned" type="button" data-feature="系统设置">
+          <button class="nav-item" type="button" data-page="settings">
             <span class="nav-icon" aria-hidden="true">⚙</span>
             <span>系统设置</span>
           </button>
@@ -127,11 +111,21 @@
               </div>
               <button class="primary-button" id="go-market-button" type="button">
                 <span>＋</span>
-                分析一只股票
+                查看股票榜单
               </button>
             </header>
 
-            <section class="metric-grid" aria-label="组合核心指标">
+            <div class="dashboard-source-bar">
+              <select id="dashboard-source" class="hidden" aria-label="数据来源">
+                <option value="client" selected>同花顺账户</option>
+              </select>
+              <button class="icon-button" id="dashboard-refresh" type="button" title="刷新总览快照" aria-label="刷新总览快照">↻</button>
+              <button class="text-button" type="button" data-page="settings">账户设置 →</button>
+              <label class="client-auto hidden"><input id="dashboard-client-auto" type="checkbox" checked /> 自动同步并分析（30 秒）</label>
+              <label class="client-auto hidden"><input id="dashboard-public-history" type="checkbox" /> 允许向腾讯查询持仓代码</label>
+              <p id="dashboard-source-status" role="status">尚未读取</p>
+            </div>
+            <section class="metric-grid" aria-label="账户核心指标">
               <article class="metric-card">
                 <div>
                   <span class="metric-label">总资产</span>
@@ -142,7 +136,7 @@
               </article>
               <article class="metric-card">
                 <div>
-                  <span class="metric-label">今日收益</span>
+                  <span class="metric-label" id="daily-profit-label">今日收益</span>
                   <strong id="daily-profit">--</strong>
                   <p id="daily-profit-note">暂无有效净值</p>
                 </div>
@@ -150,7 +144,7 @@
               </article>
               <article class="metric-card">
                 <div>
-                  <span class="metric-label">累计收益率</span>
+                  <span class="metric-label" id="total-return-label">累计收益率</span>
                   <strong id="total-return">--</strong>
                   <p id="total-return-note">暂无组合收益记录</p>
                 </div>
@@ -158,7 +152,7 @@
               </article>
               <article class="metric-card">
                 <div>
-                  <span class="metric-label">最大回撤</span>
+                  <span class="metric-label" id="max-drawdown-label">最大回撤</span>
                   <strong id="max-drawdown">--</strong>
                   <p id="max-drawdown-note">净值样本不足</p>
                 </div>
@@ -166,16 +160,49 @@
               </article>
             </section>
 
+            <section id="dashboard-client-details" class="dashboard-client-details hidden" aria-label="同花顺账户明细">
+              <dl class="dashboard-client-funds">
+                <div><dt>资金余额</dt><dd id="dashboard-cash-balance">--</dd></div>
+                <div><dt>可取金额</dt><dd id="dashboard-withdrawable">--</dd></div>
+              </dl>
+              <p id="dashboard-reconciliation" class="client-boundary"></p>
+              <section class="holding-advice-section" aria-label="持仓卖出建议">
+                <header class="client-status-line"><h2>我的持仓 · 卖出建议</h2><span id="holding-advice-status" role="status">等待同步</span></header>
+                <div id="holding-decisions" class="holding-decisions"></div>
+                <p class="client-boundary">默认亏损提醒线 8%，止盈观察线 20%。建议仅供人工判断，未提交订单。</p>
+              </section>
+              <details class="holding-raw-details">
+                <summary>资金持仓明细与自选股</summary>
+                <div class="dashboard-client-tables">
+                <section aria-label="同步持仓">
+                  <header class="client-status-line"><h2>持仓明细</h2></header>
+                  <div class="table-scroll"><table class="data-table workspace-table">
+                    <thead><tr><th>证券</th><th>名称</th><th>数量</th><th>可用数量</th><th>市价</th><th>成本价</th><th>市值</th></tr></thead>
+                    <tbody id="dashboard-positions"></tbody>
+                  </table></div>
+                </section>
+                <section aria-label="同步自选股">
+                  <header class="client-status-line"><h2 id="dashboard-watchlist-title">自选股</h2><span id="dashboard-watchlist-status"></span></header>
+                  <div class="table-scroll"><table class="data-table">
+                    <thead><tr><th>证券</th><th>名称</th></tr></thead>
+                    <tbody id="dashboard-watchlist"></tbody>
+                  </table></div>
+                </section>
+              </div>
+              </details>
+              <p class="client-boundary">来源：客户端显示值。账户唯一标识未经核实；未写入组合账本，不用于下单。</p>
+            </section>
+
             <section class="overview-grid">
               <article class="panel equity-panel">
                 <header class="panel-header">
                   <div>
                     <div class="panel-title-row">
-                      <h2>组合净值曲线</h2>
+                      <h2 id="equity-title">组合净值曲线</h2>
                       <span class="info-tip" title="组合净值与基准指数归一化后对比">i</span>
                     </div>
                     <div class="chart-legend">
-                      <span><i class="legend-line strategy"></i>策略净值</span>
+                      <span><i class="legend-line strategy"></i><span id="equity-series-label">策略净值</span></span>
                       <span><i class="legend-line benchmark"></i><span id="equity-benchmark-label">比较基准</span></span>
                     </div>
                   </div>
@@ -192,7 +219,7 @@
                     <div class="empty-illustration" aria-hidden="true">
                       <span></span><span></span><span></span><span></span><span></span>
                     </div>
-                    <strong>暂无组合净值</strong>
+                    <strong id="equity-empty-title">暂无组合净值</strong>
                     <p id="equity-empty-message">创建组合并录入交易后，这里会显示净值与比较基准。</p>
                   </div>
                 </div>
@@ -208,6 +235,7 @@
                 </header>
                 <div class="risk-content">
                   <div class="radar-placeholder" id="risk-radar" aria-label="风险雷达图">
+                    <canvas id="risk-radar-canvas" class="hidden" aria-label="当前持仓风险指标"></canvas>
                     <div class="radar-ring ring-one"></div>
                     <div class="radar-ring ring-two"></div>
                     <div class="radar-ring ring-three"></div>
@@ -222,17 +250,19 @@
                     <strong>待计算</strong>
                   </div>
                   <dl class="risk-list">
-                    <div><dt>年化波动率</dt><dd id="risk-volatility">--</dd></div>
-                    <div><dt>夏普比率</dt><dd id="risk-sharpe">--</dd></div>
-                    <div><dt>Beta</dt><dd id="risk-beta">--</dd></div>
-                    <div><dt>VaR(95%)</dt><dd id="risk-var">--</dd></div>
-                    <div><dt>完整持仓周期胜率</dt><dd id="risk-win-rate">--</dd></div>
-                    <div><dt>盈亏比</dt><dd id="risk-profit-loss">--</dd></div>
+                    <div><dt id="risk-volatility-label">年化波动率</dt><dd id="risk-volatility">--</dd></div>
+                    <div><dt id="risk-sharpe-label">夏普比率</dt><dd id="risk-sharpe">--</dd></div>
+                    <div><dt id="risk-beta-label">Beta</dt><dd id="risk-beta">--</dd></div>
+                    <div><dt id="risk-var-label">VaR(95%)</dt><dd id="risk-var">--</dd></div>
+                    <div><dt id="risk-win-rate-label">完整持仓周期胜率</dt><dd id="risk-win-rate">--</dd></div>
+                    <div><dt id="risk-profit-loss-label">盈亏比</dt><dd id="risk-profit-loss">--</dd></div>
                   </dl>
                 </div>
+                <p id="risk-radar-scale" class="risk-detail hidden">图形满刻度：仓位、集中度、不可卖占比 100%；年化波动 60%；单日 VaR 10%。仅为绘图尺度，不是风险评分。</p>
+                <p id="risk-history-detail" class="risk-detail hidden" role="status"></p>
               </article>
 
-              <article class="panel strategy-panel">
+              <article class="panel strategy-panel hidden" inert>
                 <header class="panel-header">
                   <div>
                     <div class="panel-title-row">
@@ -241,7 +271,7 @@
                     </div>
                     <p class="panel-description">当前可用分析模型与运行状态</p>
                   </div>
-                  <button class="text-button" type="button" data-page="research">查看样本外验证 →</button>
+                  <button class="text-button" type="button" disabled>查看样本外验证</button>
                 </header>
                 <div class="table-scroll">
                   <table class="data-table">
@@ -293,8 +323,8 @@
             <section class="onboarding-banner" id="onboarding-banner">
               <div class="onboarding-icon" aria-hidden="true">Q</div>
               <div>
-                <strong>从真实数据开始建立投资记录</strong>
-                <p>可先创建组合并录入交易，或在策略研究中执行 walk-forward 样本外验证。</p>
+                <strong>尚未同步同花顺账户</strong>
+                <p>资金、持仓及风险数据暂不可用。</p>
               </div>
               <button class="secondary-button" id="onboarding-market-button" type="button">前往行情中心</button>
             </section>
@@ -303,23 +333,28 @@
           <section class="page" id="market-page" data-page-panel="market">
             <header class="page-heading market-heading">
               <div>
-                <p class="eyebrow">MARKET RESEARCH</p>
+                <p class="eyebrow">STOCK RANKING</p>
                 <h1>行情中心</h1>
-                <p class="page-subtitle">公开行情 · 量价指标 · 机器学习辅助判断</p>
+                <p class="page-subtitle">主板股票分析 · 最近完整日线</p>
               </div>
               <div class="mode-tabs" role="tablist" aria-label="行情功能切换">
-                <button id="single-tab" class="mode-tab active" type="button">单股分析</button>
-                <button id="scan-tab" class="mode-tab" type="button">全 A 扫描</button>
+                <button id="scan-tab" class="mode-tab active" type="button">股票榜单</button>
+                <button id="single-tab" class="mode-tab" type="button">查看个股</button>
               </div>
             </header>
 
             <section class="market-control panel">
-              <form id="advisor-form" class="market-form">
+              <div class="client-stock-picker-bar hidden" id="single-stock-picker">
+                <label><span>同花顺股票</span><select id="client-stock-picker" disabled><option value="">尚未同步</option></select></label>
+                <button id="client-stock-refresh" class="icon-button" type="button" title="刷新已同步股票" aria-label="刷新已同步股票">↻</button>
+                <span id="client-analysis-source" aria-live="polite"></span>
+              </div>
+              <form id="advisor-form" class="market-form hidden">
                 <label class="symbol-field">
                   <span>股票代码</span>
                   <input id="symbol" inputmode="numeric" maxlength="6" placeholder="例如 600519" />
                 </label>
-                <label>
+                <label class="algorithm-field">
                   <span>分析算法</span>
                   <select id="algorithm">
                     <option value="robust_ensemble">稳健集成模型（5日）</option>
@@ -327,17 +362,21 @@
                     <option value="knn">KNN 相似样本</option>
                     <option value="weighted_knn">加权 KNN</option>
                     <option value="logistic_regression">逻辑回归</option>
+                    <option value="random_forest">随机森林（5日）</option>
+                    <option value="extra_trees">极端随机树（5日）</option>
+                    <option value="gradient_boosting">梯度提升树（5日）</option>
+                    <option value="gaussian_nb">高斯朴素贝叶斯（5日）</option>
                   </select>
                 </label>
-                <label>
+                <label class="hidden">
                   <span>持仓成本价（可选）</span>
                   <input id="cost-price" inputmode="decimal" placeholder="5.20" />
                 </label>
-                <label>
+                <label class="hidden">
                   <span>持仓数量（可选）</span>
                   <input id="quantity" inputmode="decimal" placeholder="1000" />
                 </label>
-                <details class="advanced-settings">
+                <details class="advanced-settings hidden">
                   <summary>风控参数</summary>
                   <div>
                     <label>
@@ -353,8 +392,14 @@
                 <button id="submit-button" class="primary-button submit-button" type="submit">开始分析</button>
               </form>
 
-              <form id="scan-form" class="market-form scan-form hidden">
-                <label>
+              <form id="scan-form" class="market-form scan-form">
+                <div class="candidate-pool-tabs" role="tablist" aria-label="候选股票池">
+                  <button id="pool-gainers" type="button" role="tab" data-market-pool="gainers" aria-selected="true" aria-controls="scan-view">涨幅 500</button>
+                  <button id="pool-losers" type="button" role="tab" data-market-pool="losers" aria-selected="false" aria-controls="scan-view" tabindex="-1">跌幅 500</button>
+                  <button id="pool-limit-down" type="button" role="tab" data-market-pool="limit_down" aria-selected="false" aria-controls="scan-view" tabindex="-1">跌停 100</button>
+                  <button id="pool-limit-up" type="button" role="tab" data-market-pool="limit_up" aria-selected="false" aria-controls="scan-view" tabindex="-1">涨停 100</button>
+                </div>
+                <label class="hidden">
                   <span>分析算法</span>
                   <select id="scan-algorithm">
                     <option value="robust_ensemble">稳健集成模型（5日）</option>
@@ -365,11 +410,11 @@
                   </select>
                 </label>
                 <div class="scan-description">
-                  <strong>全市场 Top 10 观察池</strong>
-                  <p>逐只分析公开 A 股列表，并实时保留当前评分最高的候选股票。</p>
+                  <strong id="scan-pool-title">涨幅 Top 500 股票池</strong>
+                  <p>Top 10 · 已分析股票评分榜；入榜不等于买入建议。</p>
                 </div>
-                <button id="scan-once-button" class="primary-button" type="submit">启动全 A 扫描</button>
-                <button id="scan-auto-button" class="secondary-button" type="button">停止扫描</button>
+                <button id="scan-once-button" class="primary-button" type="submit"><span aria-hidden="true">↻</span> 更新候选</button>
+                <button id="scan-auto-button" class="icon-button" type="button" aria-label="停止筛选" title="停止筛选" disabled>■</button>
               </form>
             </section>
 
@@ -393,12 +438,12 @@
 
               <div id="error-state" class="error-state hidden" role="alert"></div>
 
-              <article id="scan-view" class="scan-view hidden">
+              <article id="scan-view" class="scan-view hidden" role="tabpanel" aria-labelledby="pool-gainers">
                 <section class="scan-overview panel">
                   <header class="result-header">
                     <div>
-                      <p class="eyebrow" id="scan-meta">MARKET SCAN</p>
-                      <h2>全 A Top 10 买入观察池</h2>
+                      <p class="eyebrow" id="scan-meta">全部 A 股涨幅 Top 500</p>
+                      <h2>分析榜单 Top 10</h2>
                     </div>
                     <div class="score-card">
                       <span>当前入榜</span>
@@ -406,12 +451,15 @@
                     </div>
                   </header>
                   <div class="scan-summary">
-                    <div><span>读取股票数</span><strong id="scan-fetched">0</strong></div>
-                    <div><span>扫描进度</span><strong><span id="scan-finished">0</span>/<span id="scan-total">--</span></strong></div>
-                    <div><span>剔除数量</span><strong id="scan-skipped">0</strong></div>
-                    <div><span>失败数量</span><strong id="scan-failed">0</strong></div>
+                    <div class="hidden"><span>读取股票数</span><strong id="scan-fetched">0</strong></div>
+                    <div><span>成功分析 / 合格入池</span><strong><span id="scan-successful">0</span>/<span id="scan-total">--</span></strong><small>已处理 <span id="scan-finished">0</span> 只</small></div>
+                    <div class="hidden"><span>剔除数量</span><strong id="scan-skipped">0</strong></div>
+                    <div><span>失败 / 数据不足</span><strong id="scan-failed">0</strong><small>行情源不可用，待重试 <span id="scan-deferred">0</span> 只</small></div>
                     <div><span>运行状态</span><strong id="scan-refresh-status">待启动</strong></div>
                   </div>
+                  <p id="scan-live-update" class="client-boundary" role="status" aria-live="polite">等待股票分析完成。</p>
+                  <p id="scan-universe-status" class="client-boundary">股票池来源：新浪公开涨幅榜，非同花顺客户端直读。</p>
+                  <p id="scan-coverage-note" class="client-boundary hidden" role="status"></p>
                 </section>
                 <section class="panel scan-table-wrap">
                   <div class="table-scroll">
@@ -419,18 +467,21 @@
                       <thead>
                         <tr>
                           <th>排名</th>
-                          <th>股票</th>
-                          <th>建议</th>
-                          <th>评分</th>
-                          <th>历史达标</th>
+                          <th>股票 / 行业</th>
+                          <th>参考收盘价</th>
+                          <th>行情日期</th>
+                          <th>评分 / 结论</th>
                           <th>核心理由</th>
                           <th>风险</th>
+                          <th>详情</th>
                         </tr>
                       </thead>
                       <tbody id="scan-results"></tbody>
                     </table>
                   </div>
-                  <div id="scan-empty" class="scan-empty">正在等待第一只股票完成分析。</div>
+                  <div id="scan-empty" class="scan-empty" role="status">尚未筛选。</div>
+                  <p id="scan-scope" class="client-boundary">范围：按涨跌幅降序选取 500 只主板股票；创业板、科创板及北交所不占名额，沿榜单顺延补足。全池合格股票不足时按实际数量。入池不等于买入信号。日线来源：腾讯或东方财富完整前复权序列，非实时盘口。</p>
+                  <p id="scan-industry-status" class="client-boundary">行业来源：新浪行业分类。</p>
                 </section>
               </article>
 
@@ -525,6 +576,7 @@
                   <article class="panel detail-card">
                     <h2>机器学习预测</h2>
                     <div id="ml-detail" class="metric-list"></div>
+                    <p class="metric-note">模型估计未经样本外验证，不代表实际盈利概率。</p>
                   </article>
                   <article class="panel detail-card wide"><h2>下一步观察</h2><ol id="observations"></ol></article>
                 </section>
@@ -532,7 +584,103 @@
             </section>
           </section>
 
-          <section class="page" id="research-page" data-page-panel="research">
+          <section class="page" id="trade-page" data-page-panel="trade">
+            <header class="page-heading">
+              <div><p class="eyebrow">CLIENT TRADING</p><h1>买入卖出</h1><p class="page-subtitle">平安证券 · 同花顺客户端确认</p></div>
+              <div class="trade-header-actions">
+                <button id="trade-launch" class="secondary-button" type="button">打开同花顺</button>
+                <button id="trade-sync" class="icon-button" type="button" title="同步资金和持仓" aria-label="同步资金和持仓">↻</button>
+              </div>
+            </header>
+            <div class="trade-account-strip">
+              <div><span>可用资金</span><strong id="trade-cash">--</strong></div>
+              <div><span>持仓市值</span><strong id="trade-market-value">--</strong></div>
+              <div><span>账户状态</span><strong id="trade-account-state">尚未同步</strong><small id="trade-captured">--</small></div>
+            </div>
+            <p id="trade-connection-message" class="client-boundary" role="status"></p>
+            <div class="trade-workspace">
+              <section class="trade-entry" aria-label="买卖委托">
+                <div class="trade-side-tabs" role="tablist" aria-label="委托方向">
+                  <button id="trade-buy" type="button" role="tab" aria-selected="true" aria-controls="trade-form" data-trade-side="BUY">买入</button>
+                  <button id="trade-sell" type="button" role="tab" aria-selected="false" aria-controls="trade-form" tabindex="-1" data-trade-side="SELL">卖出</button>
+                </div>
+                <form id="trade-form" role="tabpanel" aria-labelledby="trade-buy">
+                  <label><span>持仓 / 自选股</span><select id="trade-stock-picker"><option value="">手动输入股票代码</option></select></label>
+                  <label><span>股票代码</span><input id="trade-symbol" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" placeholder="6位沪深主板代码" required /></label>
+                  <div class="trade-numbers">
+                    <label><span>限价（元）</span><input id="trade-price" type="number" min="0.01" max="99999.99" step="0.01" inputmode="decimal" required /></label>
+                    <label><span>数量（股）</span><input id="trade-quantity" type="number" min="1" max="1000000" step="1" inputmode="numeric" required /></label>
+                  </div>
+                  <div class="trade-estimate"><span>委托金额（不含费用）</span><strong id="trade-amount">--</strong></div>
+                  <p id="trade-availability" class="client-boundary">--</p>
+                  <button id="trade-review" class="primary-button" type="submit">核对委托</button>
+                </form>
+                <p id="trade-error" class="error-state hidden" role="alert"></p>
+              </section>
+              <section class="trade-review-panel" aria-label="委托核对结果">
+                <h2>委托核对</h2>
+                <p id="trade-status" role="status">未提交</p>
+                <div id="trade-draft" class="hidden">
+                  <strong class="trade-draft-state">委托草稿 · 未提交</strong>
+                  <dl id="trade-draft-fields"></dl>
+                  <p id="trade-draft-time" class="client-boundary"></p>
+                </div>
+                <button id="trade-client-open" type="button" class="secondary-button" disabled>打开同花顺继续</button>
+                <p class="client-boundary">自动填写未验证。请在客户端手动填写并确认提交；账户编号、实时价格、涨跌停、交易时段及账户权限均以客户端为准。资金核对不冻结额度，未接入委托或成交回报。</p>
+              </section>
+            </div>
+            <section class="trade-holdings" aria-label="可卖持仓">
+              <h2>持仓与可卖数量</h2>
+              <div class="table-scroll"><table class="data-table">
+                <thead><tr><th>股票</th><th>持仓</th><th>可卖</th><th>客户端参考价</th><th>操作</th></tr></thead>
+                <tbody id="trade-positions"></tbody>
+              </table></div>
+            </section>
+          </section>
+
+          <section class="page" id="automation-page" data-page-panel="automation">
+            <header class="page-heading">
+              <div><p class="eyebrow">LIVE AUTOMATION</p><h1>自动化交易</h1><p class="page-subtitle">平安证券 · 同花顺客户端</p></div>
+              <span class="client-readonly">实盘未接通</span>
+            </header>
+            <div class="automation-state-strip" role="status">
+              <strong>未运行 · 禁止实盘启动</strong>
+              <span id="automation-saved">尚未读取配置</span>
+            </div>
+            <p id="automation-boundary" class="client-boundary">当前仅支持保存实盘草案和检查接入条件，不会自动下单或撤单。规则及限额尚未执行，不能替代券商风控。</p>
+            <p id="automation-error" class="error-state hidden" role="alert"></p>
+            <div class="automation-workspace">
+              <section aria-labelledby="automation-config-title">
+                <h2 id="automation-config-title">规则与限额草案</h2>
+                <form id="automation-form">
+                  <div class="automation-fields">
+                    <label><span>投入上限（元）</span><input id="automation-capital" type="number" min="0.01" max="999999999.99" step="0.01" required /></label>
+                    <label><span>单笔买入上限（元）</span><input id="automation-order-limit" type="number" min="0.01" max="999999999.99" step="0.01" required /></label>
+                    <label><span>单股仓位上限（占投入上限 %）</span><input id="automation-position-limit" type="number" min="0.01" max="100" step="0.01" required /></label>
+                    <label><span>单日亏损停机线（元）</span><input id="automation-loss-limit" type="number" min="0.01" max="999999999.99" step="0.01" required /></label>
+                  </div>
+                  <label><span>交易白名单（1至30只沪深主板代码）</span><textarea id="automation-symbols" rows="2" maxlength="240" placeholder="用逗号或空格分隔" required></textarea></label>
+                  <label><span>买入规则说明（待实现）</span><textarea id="automation-buy-rule" rows="3" maxlength="500" required></textarea></label>
+                  <label><span>卖出规则说明（待实现）</span><textarea id="automation-sell-rule" rows="3" maxlength="500" required></textarea></label>
+                  <label><span>允许自动卖出现有持仓</span><select id="automation-existing" required><option value="">请选择</option><option value="false">不允许</option><option value="true">允许，仅限交易白名单</option></select></label>
+                  <div class="automation-actions">
+                    <button id="automation-save" class="primary-button" type="submit" disabled>保存草案</button>
+                    <button id="automation-reset" class="text-button" type="button" disabled>恢复上次读取</button>
+                    <span id="automation-edit-state" role="status"></span>
+                  </div>
+                </form>
+              </section>
+              <section class="automation-checks-panel" aria-labelledby="automation-check-title">
+                <header><h2 id="automation-check-title">实盘接入检查</h2><button id="automation-refresh" class="icon-button" type="button" aria-label="检查实盘接入状态" title="检查实盘接入状态">↻</button></header>
+                <ul id="automation-checks"><li>尚未检查</li></ul>
+                <small id="automation-checked"></small>
+                <button id="automation-start" type="button" class="primary-button" aria-describedby="automation-boundary" title="执行通道尚未接通，后端禁止启动" disabled>启动自动交易</button>
+                <p class="client-boundary">没有已验证的执行通道，不会通过坐标点击或重试猜测委托结果。模拟成交不能作为实盘回报。</p>
+              </section>
+            </div>
+          </section>
+
+          <section class="page hidden" id="research-page" inert>
             <header class="page-heading">
               <div>
                 <p class="eyebrow">OUT-OF-SAMPLE RESEARCH</p>
@@ -615,7 +763,7 @@
             </section>
           </section>
 
-          <section class="page" id="backtest-page" data-page-panel="backtest">
+          <section class="page hidden" id="backtest-page" inert>
             <header class="page-heading">
               <div>
                 <p class="eyebrow">STRATEGY BACKTEST</p>
@@ -723,7 +871,7 @@
             </section>
           </section>
 
-          <section class="page" id="experiments-page" data-page-panel="experiments">
+          <section class="page hidden" id="experiments-page" inert>
             <header class="page-heading">
               <div><p class="eyebrow">PORTFOLIO RESEARCH</p><h1>组合实验</h1></div>
               <span class="status-badge" id="experiment-mode">实盘禁用</span>
@@ -757,12 +905,29 @@
                 <canvas id="experiment-chart" aria-label="基础成本与双倍成本的样本外净值曲线"></canvas>
               </section>
               <section class="experiment-section">
+                <h2>最终留出期</h2>
+                <div class="client-funds">
+                  <div><span>成本后净收益</span><strong id="holdout-return">--</strong></div>
+                  <div><span>双倍成本净收益</span><strong id="holdout-stress">--</strong></div>
+                  <div><span>最大回撤</span><strong id="holdout-drawdown">--</strong></div>
+                </div>
+                <p id="holdout-period" class="result-disclaimer"></p>
+              </section>
+              <section class="experiment-section">
                 <h2>研究验收</h2>
                 <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>检查</th><th>结果</th><th>观测值</th><th>阈值</th></tr></thead><tbody id="experiment-checks"></tbody></table></div>
               </section>
               <section class="experiment-section">
                 <h2>时间分段</h2>
                 <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>训练段</th><th>测试段</th><th>冻结窗口</th><th>净收益</th><th>最大回撤</th></tr></thead><tbody id="experiment-folds"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>数据体检</h2><span id="experiment-audit-status"></span></header>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>检查</th><th>状态</th><th>观测与边界</th></tr></thead><tbody id="experiment-data-checks"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>样本外盈亏归因</h2><span id="experiment-reconciliation"></span></header>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>证券</th><th>已实现盈亏</th><th>未实现盈亏</th><th>净盈亏</th><th>费用</th></tr></thead><tbody id="experiment-attribution"></tbody></table></div>
               </section>
               <section class="experiment-section">
                 <h2>风控事件</h2><ul id="experiment-events"></ul>
@@ -778,9 +943,113 @@
             </section>
           </section>
 
-          <section class="page" id="client-page" data-page-panel="client">
+          <section class="page hidden" id="paper-page" inert>
             <header class="page-heading">
-              <div><p class="eyebrow">LOCAL CLIENT</p><h1>同花顺连接</h1><p class="page-subtitle">平安证券 · 只读账户快照</p></div>
+              <div><p class="eyebrow">FORWARD OBSERVATION</p><h1>前向模拟</h1></div>
+              <span class="client-readonly">模拟资金 · 实盘禁用</span>
+            </header>
+            <form id="paper-form" class="experiment-controls">
+              <label><span>数据来源</span><select id="paper-source"><option value="public">公开日线</option><option value="file">未复权快照</option></select></label>
+              <label id="paper-symbols-label"><span>证券代码</span><input id="paper-symbols" placeholder="逗号分隔" autocomplete="off" /></label>
+              <label id="paper-file-label" class="hidden"><span>快照 JSON</span><input id="paper-file" type="file" accept=".json,application/json" /></label>
+              <label><span>模拟资金（元）</span><input id="paper-cash" type="number" min="1000" max="1000000000000" step="1000" value="100000" required /></label>
+              <label><span>单证券上限</span><input id="paper-weight" type="number" min="0.01" max="0.8" step="0.01" value="0.2" required /></label>
+              <label><span>回撤熔断阈值</span><input id="paper-drawdown" type="number" min="0.01" max="1" step="0.01" value="0.12" required /></label>
+              <button id="paper-create" class="primary-button" type="submit" disabled>冻结并创建</button>
+            </form>
+            <div class="experiment-history">
+              <label for="paper-history">模拟记录</label>
+              <select id="paper-history"><option value="">暂无模拟记录</option></select>
+              <button id="paper-refresh" class="secondary-button" type="button">检查状态</button>
+              <button id="paper-download" class="secondary-button" type="button" disabled>导出观察报告</button>
+              <button id="paper-recover" class="secondary-button hidden" type="button" disabled>恢复最新完整存档</button>
+            </div>
+            <div id="paper-error" class="error-state hidden" role="alert"></div>
+            <div id="paper-loading" class="feature-loading hidden" role="status"><div class="loader"></div><strong>模拟处理中</strong></div>
+            <p id="paper-empty" class="experiment-empty">暂无前向观察记录</p>
+            <section id="paper-result" class="hidden">
+              <div class="experiment-status"><strong id="paper-status"></strong><span id="paper-id"></span></div>
+              <div class="paper-toolbar">
+                <button id="paper-advance" class="primary-button" type="button">推进至今日收盘</button>
+                <button id="paper-pause" class="secondary-button" type="button">暂停观察</button>
+                <button id="paper-resume" class="secondary-button" type="button" disabled>继续观察</button>
+                <label class="client-auto"><input id="paper-auto" type="checkbox" /> 页面自动检查（60 分钟）</label>
+              </div>
+              <div class="paper-metrics">
+                <div><span>模拟净值（元）</span><strong id="paper-equity">--</strong><small id="paper-date">--</small></div>
+                <div><span>成本后收益</span><strong id="paper-return">--</strong><small id="paper-fees">--</small></div>
+                <div><span>最大回撤</span><strong id="paper-dd">--</strong><small id="paper-halt">--</small></div>
+                <div><span>前向观察日</span><strong id="paper-days">--</strong><small id="paper-evidence">--</small></div>
+              </div>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>运行状态</h2><span id="paper-revision"></span></header>
+                <div class="paper-operations">
+                  <div><span>后台观察进程</span><strong id="paper-worker"></strong></div>
+                  <div><span>最后心跳</span><strong id="paper-heartbeat"></strong></div>
+                  <div><span>模拟账本对账</span><strong id="paper-reconciliation"></strong></div>
+                </div>
+                <ul id="paper-alerts" aria-live="polite"></ul>
+              </section>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>净值对照</h2><div class="experiment-legend"><span>组合净值</span><span id="paper-benchmark-name">基准价格净值</span></div></header>
+                <canvas id="paper-chart" aria-label="前向组合与同期基准净值曲线"></canvas>
+                <div class="paper-metrics">
+                  <div><span>基准价格毛收益</span><strong id="paper-benchmark-return">--</strong><small>不含分红及交易成本</small></div>
+                  <div><span>累计超额收益</span><strong id="paper-excess">--</strong><small id="paper-recent-excess">--</small></div>
+                  <div><span>年化主动风险</span><strong id="paper-tracking-error">--</strong><small id="paper-information-ratio">--</small></div>
+                  <div><span>日终总仓位</span><strong id="paper-exposure">--</strong><small id="paper-cash">--</small></div>
+                </div>
+              </section>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>前向证据检查</h2><span id="paper-check-status"></span></header>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>检查</th><th>结果</th><th>观测值</th><th>阈值</th></tr></thead><tbody id="paper-checks"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <h2>当前模拟持仓</h2>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>证券</th><th>数量</th><th>日终权重</th><th>下一目标</th><th>估值价</th><th>估值日期</th><th>状态</th></tr></thead><tbody id="paper-positions"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <h2>模拟执行质量</h2>
+                <div class="paper-operations">
+                  <div><span>有成交订单比例（含部分成交）</span><strong id="paper-fill-rate">--</strong></div>
+                  <div><span>双向成交额 / 初始资金</span><strong id="paper-turnover">--</strong></div>
+                  <div><span>相对开盘价模型价差（元）</span><strong id="paper-shortfall">--</strong></div>
+                </div>
+                <p id="paper-execution-counts" class="result-disclaimer"></p>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>拒单 / 部分成交原因</th><th>订单数</th></tr></thead><tbody id="paper-rejections"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>数据体检</h2><span id="paper-audit-status"></span></header>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>检查</th><th>状态</th><th>观测与边界</th></tr></thead><tbody id="paper-data-checks"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <h2>逐证券盈亏归因</h2>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>证券</th><th>已实现盈亏</th><th>未实现盈亏</th><th>净盈亏</th><th>费用</th></tr></thead><tbody id="paper-attribution"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <header class="panel-header"><h2>下一交易日冻结信号</h2><span id="paper-signal-date"></span></header>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>证券</th><th>目标权重</th></tr></thead><tbody id="paper-intents"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <h2>近期模拟订单</h2>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>日期</th><th>证券</th><th>方向</th><th>成交数量</th><th>费用</th><th>状态</th></tr></thead><tbody id="paper-orders"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <h2>观察记录</h2>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>市场日期</th><th>记录时间</th><th>证据类型</th><th>信号执行</th></tr></thead><tbody id="paper-observations"></tbody></table></div>
+              </section>
+              <section class="experiment-section">
+                <h2>近期存档版本</h2>
+                <div class="table-scroll"><table class="data-table workspace-table"><thead><tr><th>版本</th><th>操作</th><th>记录时间</th><th>内容指纹</th></tr></thead><tbody id="paper-revisions"></tbody></table></div>
+              </section>
+              <section class="experiment-section"><h2>发布阻断项</h2><ul id="paper-limitations"></ul></section>
+              <details class="experiment-section"><summary>体检计算口径</summary><ul id="paper-monitor-notes"></ul></details>
+            </section>
+          </section>
+
+          <section class="page" id="settings-page" data-page-panel="settings">
+            <header class="page-heading">
+              <div><p class="eyebrow">SETTINGS</p><h1>系统设置</h1><p class="page-subtitle">同花顺客户端连接 · 数据权限</p></div>
               <span class="client-readonly">实盘下单未接入</span>
             </header>
             <section class="client-connection" aria-label="连接状态">
@@ -788,10 +1057,13 @@
               <p id="client-message" role="status" aria-live="polite">--</p>
               <div class="client-toolbar">
                 <button id="client-launch" type="button" class="primary-button" disabled>打开同花顺</button>
-                <button id="client-sync" type="button" class="secondary-button" disabled>同步账户</button>
+                <button id="client-sync" type="button" class="secondary-button" disabled>同步资金与持仓</button>
+                <button id="client-sync-watchlist" type="button" class="secondary-button" disabled>同步自选股</button>
                 <button id="client-check" type="button" class="icon-button" title="检查连接状态" aria-label="检查连接状态">↻</button>
                 <button id="client-permission" type="button" class="secondary-button hidden">申请辅助功能权限</button>
-                <label class="client-auto"><input id="client-auto" type="checkbox" /> 自动同步（30 秒）</label>
+                <label class="client-auto"><input id="client-auto" type="checkbox" checked /> 账户自动同步与分析（30 秒）</label>
+                <label class="client-auto" title="仅向腾讯公开行情接口发送持仓证券代码；不发送账号、金额、数量或登录信息。授权仅在本次服务运行期间有效，清空快照会撤销。"><input id="client-public-history" type="checkbox" /> 允许向腾讯查询持仓代码</label>
+                <label class="client-auto"><input id="client-watchlist-auto" type="checkbox" /> 自选自动读取（30 秒）</label>
                 <button id="client-clear" type="button" class="icon-button" title="清空内存快照" aria-label="清空内存快照" disabled>×</button>
               </div>
               <p id="client-runtime" class="client-runtime hidden"></p>
@@ -800,6 +1072,7 @@
             <section class="client-snapshot" aria-label="账户快照">
               <header class="client-status-line"><h2>账户快照</h2><span id="client-freshness">尚未同步</span></header>
               <p id="client-captured" class="client-captured">--</p>
+              <p id="client-account-error" class="client-channel-error" role="status"></p>
               <div class="client-funds">
                 <div><span>总资产</span><strong id="client-assets">--</strong></div>
                 <div><span>持仓市值</span><strong id="client-market-value">--</strong></div>
@@ -807,22 +1080,33 @@
                 <div><span>可用金额</span><strong id="client-available">--</strong></div>
                 <div><span>可取金额</span><strong id="client-withdrawable">--</strong></div>
               </div>
+              <p id="client-funds-reconciliation" class="client-boundary hidden" role="status"></p>
               <div class="table-scroll"><table class="data-table workspace-table">
-                <thead><tr><th>证券</th><th>名称</th><th>数量</th><th>可用数量</th><th>市价</th><th>成本价</th><th>市值</th></tr></thead>
-                <tbody id="client-positions"><tr><td colspan="7">尚无经过校验的持仓快照。</td></tr></tbody>
+                <thead><tr><th>证券</th><th>名称</th><th>数量</th><th>可用数量</th><th>市价</th><th>成本价</th><th>市值</th><th>研究</th></tr></thead>
+                <tbody id="client-positions"><tr><td colspan="8">尚无经过校验的持仓快照。</td></tr></tbody>
               </table></div>
               <p class="client-boundary">来源：客户端显示值。账户唯一标识未经核实；快照与组合账本分开，不用于下单。</p>
+            </section>
+            <section class="client-watchlist-section" aria-label="自选股快照">
+              <header class="client-status-line"><h2 id="client-watchlist-group">尚未同步分组</h2><span id="client-watchlist-freshness">尚未同步</span></header>
+              <p id="client-watchlist-captured" class="client-captured">尚无经过数量校验的自选股快照</p>
+              <p id="client-watchlist-error" class="client-channel-error" role="status"></p>
+              <div class="table-scroll"><table class="data-table workspace-table">
+                <thead><tr><th>证券</th><th>名称</th><th>研究</th></tr></thead>
+                <tbody id="client-watchlist"><tr><td colspan="3">尚未同步自选股。</td></tr></tbody>
+              </table></div>
             </section>
             <section class="client-capabilities" aria-label="接入范围">
               <h2>接入范围</h2>
               <dl><div><dt>客户端启动</dt><dd id="client-launch-capability">待检查</dd></div>
                 <div><dt>资金与持仓</dt><dd id="client-read-capability">待检查</dd></div>
-                <div><dt>自选股、行情流、成交回报</dt><dd>尚未接入</dd></div>
+                <div><dt>自选分组</dt><dd id="client-watchlist-capability">待检查</dd></div>
+                <div><dt>行情流、成交回报</dt><dd>尚未接入</dd></div>
                 <div><dt>登录回调、下单、撤单</dt><dd>无已验证接口，已阻断</dd></div></dl>
             </section>
           </section>
 
-          <section class="page" id="portfolios-page" data-page-panel="portfolios">
+          <section class="page hidden" id="portfolios-page" inert>
             <header class="page-heading">
               <div>
                 <p class="eyebrow">PORTFOLIO LEDGER</p>
@@ -910,7 +1194,8 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="/app.js?v=20260729-release-gate"></script>
-    <script src="/experiments.js"></script>
     <script src="/client.js"></script>
+    <script src="/trade.js"></script>
+    <script src="/automation.js"></script>
   </body>
 </html>

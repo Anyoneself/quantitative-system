@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
 
 from analysis.divergence import DivergenceResult
 from analysis.fund_flow import FundFlowResult
 from analysis.indicators import IndicatorResult, calculate_indicators
 from analysis.patterns import PatternResult, detect_patterns
 from data.models import PriceVolumeBar
+from data.errors import DataRefreshError
+from data.quality import validate_price_bars
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,7 @@ def build_sell_advice(
     target_profit_rate: float = 0.20,
     fund_flow: FundFlowResult | None = None,
     divergence: DivergenceResult | None = None,
+    current_price: float | None = None,
 ) -> SellAdvice:
     if not bars:
         return make_no_sell_data_advice(f"行情接口没有返回股票 {symbol} 的价格和成交量数据。")
@@ -67,9 +72,10 @@ def build_sell_advice(
 
     patterns = detect_patterns(indicators)
     recent_high_close = max(bar.close for bar in bars[-20:])
+    valuation_price = indicators.close if current_price is None else current_price
     key_levels = SellKeyLevels(
         cost_price=cost_price,
-        close=indicators.close,
+        close=valuation_price,
         ma20=indicators.ma20,
         ma250=indicators.ma250,
         recent_high_close=recent_high_close,
@@ -78,7 +84,7 @@ def build_sell_advice(
     if cost_price is None or cost_price <= 0:
         return _technical_risk_advice(indicators, patterns, key_levels, fund_flow, divergence)
 
-    holding_return = (indicators.close - cost_price) / cost_price
+    holding_return = (valuation_price - cost_price) / cost_price
     score = 0
     reasons: list[str] = []
     risks: list[str] = []
@@ -99,7 +105,7 @@ def build_sell_advice(
     score = _apply_fund_flow_sell_risk(score, fund_flow, patterns, risks, reasons, observations)
     score = _apply_divergence_sell_risk(score, divergence, risks, reasons, observations)
 
-    drawdown_from_recent_high = _safe_ratio(recent_high_close - indicators.close, recent_high_close)
+    drawdown_from_recent_high = _safe_ratio(recent_high_close - valuation_price, recent_high_close)
     if drawdown_from_recent_high >= 0.08 and holding_return > 0:
         score += 12
         risks.append(
@@ -148,6 +154,77 @@ def build_sell_advice(
         fund_flow=fund_flow,
         divergence=divergence,
     )
+
+
+def build_snapshot_sell_advice(snapshot, histories=None, *, now=None):
+    """Reuse closed-bar sell rules; value the holding only at the client's displayed price."""
+    now = now or datetime.now(timezone.utc)
+    shanghai = ZoneInfo("Asia/Shanghai")
+    captured = datetime.fromisoformat(snapshot["captured_at"]).astimezone(shanghai)
+    total_assets = float(snapshot["funds"]["total_assets"])
+    items = []
+    for position in snapshot["positions"]:
+        price, cost = float(position["price"]), float(position["cost"])
+        pnl = (price - cost) / cost if price > 0 and cost > 0 else None
+        action = "STOP_LOSS" if pnl is not None and pnl <= -.08 else "NO_DATA"
+        reason = ("客户端显示亏损已达到默认 8% 亏损提醒线，建议优先控制亏损。"
+                  if action == "STOP_LOSS" else "历史行情尚不完整，暂不能判断是否应卖出。")
+        if price <= 0:
+            reason = "客户端当前价格不可用，暂不能判断是否应卖出。"
+        if price <= 0:
+            decision, next_step = "先核对当前价格", "价格恢复后重新同步，再判断盈亏与卖出条件。"
+        elif cost <= 0:
+            decision, next_step = "先核对持仓成本", "当前成本不能计算有效收益率，不据此推算止盈或止损。"
+        elif action == "STOP_LOSS":
+            decision, next_step = "优先控制亏损", "已触及默认亏损提醒线；先核对最新价格、可卖数量与自身风险限额。"
+        elif pnl >= .20:
+            decision, next_step = "进入止盈观察", "已达到默认止盈观察线；等待趋势转弱确认，再评估分批减仓，不因达线自动卖出。"
+        elif pnl < 0:
+            decision, next_step = "亏损未越线，等待确认", "关注亏损提醒价及趋势变化，行情不足时不追加卖出判断。"
+        else:
+            decision, next_step = "保留观察，等待确认", "关注止盈观察价及趋势变化，当前盈亏本身不足以决定卖出。"
+        if price > 0 and cost > 0 and action != "STOP_LOSS":
+            reason = f"客户端显示持仓收益率 {_format_percent(pnl)}。" + next_step
+        item = {
+            "symbol": position["symbol"], "action": action, "holding_return": pnl,
+            "status": "LOCAL_ONLY" if histories is None else "PARTIAL", "reason": reason,
+            "decision": decision, "next_step": next_step,
+            "stop_loss_price": round(cost * .92, 4) if cost > 0 else None,
+            "profit_watch_price": round(cost * 1.20, 4) if cost > 0 else None,
+            "position_weight": float(position["market_value"]) / total_assets if total_assets > 0 else None,
+            "history_note": "尚未授权公开持仓行情，仅依据本地盈亏提示。" if histories is None else "该股历史行情不足，暂不能确认技术卖点。",
+            "as_of_date": None, "available_quantity": position["available"],
+            "execution_note": ("当前全部持仓不可卖；建议不代表可以立即成交。" if not position["available"]
+                               else f"客户端显示可卖 {position['available']} 股，未提交任何订单。"),
+        }
+        if histories is not None and price > 0:
+            try:
+                bars = validate_price_bars(histories.get(position["symbol"], []), minimum_count=21)
+                bars = [bar for bar in bars if bar.trade_date < captured.date()
+                        or bar.trade_date == captured.date() and captured.time() >= time(15)]
+                if len(bars) < 21 or (now.astimezone(shanghai).date() - bars[-1].trade_date).days > 7:
+                    raise DataRefreshError("insufficient recent closed bars")
+                advice = build_sell_advice(position["symbol"], bars, cost_price=cost,
+                                          quantity=position["quantity"], current_price=price)
+                reasons = advice.risks if advice.action in {"STOP_LOSS", "TAKE_PROFIT", "REDUCE"} else advice.reasons
+                item.update(action=advice.action, status="READY",
+                            reason=" ".join(reasons[:2]) or reason, as_of_date=bars[-1].trade_date.isoformat(),
+                            decision={"STOP_LOSS": "优先控制亏损", "TAKE_PROFIT": "考虑分批止盈",
+                                      "REDUCE": "考虑减仓", "HOLD": "继续持有观察",
+                                      "WATCH": "警惕趋势转弱", "NO_POSITION": "仅技术风险参考"}.get(advice.action, decision),
+                            history_note="已结合该股完整收盘日线；不是实时成交信号。",
+                            next_step={"STOP_LOSS": "已触发亏损或技术风控条件，先核对最新价格与可卖数量，再评估降低风险。",
+                                       "TAKE_PROFIT": "已有盈利且出现技术风险，结合最新价格与可卖数量评估分批止盈。",
+                                       "REDUCE": "已有趋势风险，结合最新价格与仓位评估减仓。",
+                                       "HOLD": "暂未触发卖出规则，继续关注亏损线及趋势变化。",
+                                       "WATCH": "趋势尚需确认，关注量价变化，不据此自动下单。"}.get(advice.action, next_step))
+            except (DataRefreshError, ValueError, TypeError):
+                pass
+        if item["position_weight"] is not None and item["position_weight"] >= .30:
+            item["next_step"] += f" 单股占总资产 {_format_percent(item['position_weight'])}，需同时复核集中度。"
+        items.append(item)
+    return {"snapshot_id": snapshot["snapshot_id"], "calculated_at": now.isoformat(), "items": items,
+            "max_loss_rate": .08, "target_profit_rate": .20}
 
 
 def _technical_risk_advice(
@@ -283,7 +360,7 @@ def _sell_action(
     target_profit_rate: float,
     high_position_risk: bool,
 ) -> str:
-    if holding_return <= -abs(max_loss_rate) and score >= 50:
+    if holding_return <= -abs(max_loss_rate):
         return "STOP_LOSS"
     if holding_return >= target_profit_rate and high_position_risk and score >= 30:
         return "TAKE_PROFIT"

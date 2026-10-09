@@ -39,6 +39,7 @@ class ValidationConfig:
     min_trades: int = 10
     min_sharpe: float = 0.5
     bootstrap_samples: int = 400
+    holdout_days: int = 63
 
 
 def parse_config(payload: dict | None = None) -> tuple[StrategyConfig, SimulationConfig, ValidationConfig]:
@@ -99,6 +100,8 @@ def validate_config(
             raise ValueError("验收交易数或 Sharpe 阈值超出范围。")
         if not 100 <= validation.bootstrap_samples <= 2000:
             raise ValueError("重采样次数必须在 100 到 2000 之间。")
+        if not 20 <= validation.holdout_days <= 252:
+            raise ValueError("最终留出期需 20 到 252 日。")
 
 
 def _build(config_type, payload: dict):

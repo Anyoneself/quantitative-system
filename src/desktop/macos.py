@@ -23,7 +23,7 @@ class MacClient:
             args.append(str(pid))
         try:
             result = subprocess.run(args, capture_output=True,
-                                    timeout=12 if action == "snapshot" else 3, check=True)
+                                    timeout=12 if action in ("snapshot", "watchlist") else 3, check=True)
             if len(result.stdout) > 2_000_000:
                 raise ValueError("oversized")
             data = json.loads(result.stdout)
@@ -92,6 +92,13 @@ class MacClient:
             raise BridgeError("MULTIPLE_CLIENTS" if pids else "NOT_RUNNING")
         return self._helper("snapshot", pids[0])["tree"]
 
+    def read_watchlist(self):
+        from desktop.tonghuashun import BridgeError
+        pids = client_pids()
+        if len(pids) != 1:
+            raise BridgeError("MULTIPLE_CLIENTS" if pids else "NOT_RUNNING")
+        return self._helper("watchlist", pids[0])["tree"]
+
 
 def client_pids():
     from desktop.tonghuashun import BridgeError
@@ -143,6 +150,7 @@ class AccessibilityReader:
         self.ax.AXUIElementSetMessagingTimeout.argtypes = [ct.c_void_p, ct.c_float]
         self.started = time.monotonic()
         self.count = 0
+        self.include_sheets = False
 
     def trusted(self, prompt=False):
         if not prompt:
@@ -183,7 +191,7 @@ class AccessibilityReader:
         finally:
             self.cf.CFRelease(value)
 
-    def children(self, element, attribute, depth):
+    def children(self, element, attribute, depth, *, sheets_only=False):
         value = self.attribute(element, attribute)
         if not value:
             return []
@@ -192,10 +200,37 @@ class AccessibilityReader:
                 raise RuntimeError("invalid children")
             result = []
             for index in range(self.cf.CFArrayGetCount(value)):
-                child = self.walk(self.cf.CFArrayGetValueAtIndex(value, index), depth)
-                if child is not None:
-                    result.append(child)
+                element = self.cf.CFArrayGetValueAtIndex(value, index)
+                if sheets_only:
+                    result.extend(self.find_sheets(element, depth))
+                else:
+                    child = self.walk(element, depth)
+                    if child is not None:
+                        result.append(child)
             return result
+        finally:
+            self.cf.CFRelease(value)
+
+    def find_sheets(self, element, depth=0):
+        self.count += 1
+        if self.count > MAX_NODES or depth > 32 or time.monotonic() - self.started > 10:
+            raise RuntimeError("incomplete tree")
+        role = self.text(element, "AXRole")
+        if role == "AXSheet":
+            return [self.walk(element, depth)]
+        # 自选读取只遍历设置面板；主页面可能同时包含大量行情行与交易输入框。
+        if role in {"AXTable", "AXToolbar", "AXMenuBar", "AXImage", "AXTextArea",
+                    "AXTextField", "AXSecureTextField", "AXStaticText", "AXButton"}:
+            return []
+        return self.children(element, "AXChildren", depth + 1, sheets_only=True)
+
+    def selected(self, element):
+        value = self.attribute(element, "AXSelected")
+        if not value:
+            return False
+        try:
+            return (self.cf.CFGetTypeID(value) == self.cf.CFBooleanGetTypeID()
+                    and bool(self.cf.CFBooleanGetValue(value)))
         finally:
             self.cf.CFRelease(value)
 
@@ -207,7 +242,9 @@ class AccessibilityReader:
         # 不读取输入框、密码框、工具栏、资讯和列重复视图，避免收集凭据及无关内容。
         if role in {"AXColumn", "AXToolbar", "AXMenuBar", "AXImage", "AXTextArea"}:
             return None
-        if role in {"AXTextField", "AXSecureTextField", "AXSheet"}:
+        if role in {"AXTextField", "AXSecureTextField"} or (
+            role == "AXSheet" and not getattr(self, "include_sheets", False)
+        ):
             return {"role": role, "text": "", "children": []}
         text = ""
         if role in {"AXStaticText", "AXButton", "AXCheckBox", "AXPopUpButton", "AXUnknown", "text"}:
@@ -215,19 +252,28 @@ class AccessibilityReader:
         result = {"role": role, "text": text, "children": self.children(element, "AXChildren", depth + 1)}
         if role == "AXWindow":
             result["subrole"] = self.text(element, "AXSubrole")
+            # 仅排除单按钮共享指示器；其他对话框仍交由快照校验拒绝。
+            if result == {
+                "role": "AXWindow", "text": "", "subrole": "AXDialog",
+                "children": [{"role": "AXButton", "text": "WindowSharingSessionButton", "children": []}],
+            }:
+                return None
+        if role in ("AXRow", "AXCell") and getattr(self, "include_sheets", False):
+            result["selected"] = self.selected(element)
         return result
 
-    def snapshot(self, pid):
+    def snapshot(self, pid, *, watchlist=False):
         if not self.trusted():
             return {"error": "ACCESSIBILITY_REQUIRED"}
         if client_pids() != [pid]:
             return {"error": "MULTIPLE_CLIENTS"}
         app = self.ax.AXUIElementCreateApplication(pid)
         try:
+            self.include_sheets = watchlist
             self.ax.AXUIElementSetMessagingTimeout(app, 0.5)
-            windows = self.children(app, "AXWindows", 0)
+            windows = self.children(app, "AXWindows", 0, sheets_only=watchlist)
             if not windows:
-                return {"error": "READ_FAILED"}
+                return {"error": "WATCHLIST_PAGE_REQUIRED" if watchlist else "READ_FAILED"}
             return {"tree": {"role": "AXApplication", "text": "", "children": windows}}
         finally:
             self.cf.CFRelease(app)
@@ -239,8 +285,8 @@ def main():
         action = sys.argv[1]
         if action in ("trust", "permission"):
             result = {"trusted": reader.trusted(prompt=action == "permission")}
-        elif action == "snapshot":
-            result = reader.snapshot(int(sys.argv[2]))
+        elif action in ("snapshot", "watchlist"):
+            result = reader.snapshot(int(sys.argv[2]), watchlist=action == "watchlist")
         else:
             result = {"error": "ACTION_UNAVAILABLE"}
     except Exception:

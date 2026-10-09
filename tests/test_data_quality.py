@@ -60,6 +60,24 @@ class DataQualityTest(unittest.TestCase):
         with self.assertRaisesRegex(DataQualityError, "成交量"):
             validate_price_bars([invalid])
 
+    def test_tencent_index_day_field_does_not_allow_stock_adjustment_fallback(self) -> None:
+        """Given 指数仅返回 day When 读取前复权序列 Then 指数可读但股票仍禁止未复权兜底"""
+        from data.errors import DataRefreshError
+        from data.public_sources import _fetch_tencent_stock_bars, _to_market_symbol
+
+        for symbol in ["000300", "600001"]:
+            payload = {"data": {_to_market_symbol(symbol): {
+                "day": [["2026-09-29", "10", "11", "12", "9", "10000"]],
+            }}}
+            with self.subTest(symbol=symbol), patch("data.public_sources._fetch_json", return_value=payload):
+                if symbol == "000300":
+                    bars = _fetch_tencent_stock_bars(symbol, None)
+                    self.assertEqual(bars[0].close, 11)
+                    self.assertEqual(bars[0].trade_date, date(2026, 9, 29))
+                else:
+                    with self.assertRaises(DataRefreshError):
+                        _fetch_tencent_stock_bars(symbol, None)
+
     def test_future_bar_is_rejected(self) -> None:
         invalid = _bar(0, trade_date=date(2099, 1, 5))
 

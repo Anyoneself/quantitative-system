@@ -26,7 +26,20 @@ const portfolioSelect = document.querySelector("#portfolio-select");
 
 let marketEventSource = null;
 let currentPage = "overview";
-let currentMarketMode = "single";
+let currentMarketMode = "scan";
+let marketAutoChecked = false;
+let marketScanStarting = false;
+let marketPendingPool = null;
+let currentMarketPool = null;
+let marketRequestGeneration = 0;
+let marketRunStartVersion = 0;
+let marketPollTimer = null;
+let marketPollController = null;
+let marketUpdateVersion = null;
+let marketRenderQueue = [];
+let marketRenderFrame = null;
+let singleAnalysisVersion = 0;
+let singleAnalysisController = null;
 let equityPayload = null;
 let toastTimer = null;
 let currentPortfolioId = null;
@@ -35,6 +48,9 @@ let transactionSubmissionInProgress = false;
 let pendingTransactionRequest = null;
 let dashboardRequestVersion = 0;
 let portfolioDetailRequestVersion = 0;
+let dashboardLedger = null;
+let dashboardShowsClient = false;
+let riskRadarPayload = null;
 
 const actionText = {
   BUY: "建议买入观察",
@@ -42,6 +58,13 @@ const actionText = {
   HOLD: "信号中性",
   AVOID: "暂不建议买进",
   NO_DATA: "数据不足",
+};
+
+const marketPools = {
+  gainers: { label: "涨幅 Top 500", rank: "涨幅榜", scope: "按涨跌幅降序选取 500 只主板股票。" },
+  losers: { label: "跌幅 Top 500", rank: "跌幅榜", scope: "按涨跌幅升序选取 500 只主板股票。" },
+  limit_down: { label: "跌停最多 100 只", rank: "跌停池", scope: "东方财富当日跌停池，按成交额降序选取 100 只主板股票。跌停不代表见底，存在流动性风险。" },
+  limit_up: { label: "涨停最多 100 只", rank: "涨停池", scope: "东方财富当日涨停池，按成交额降序选取 100 只主板股票。涨停不代表可买入，存在无法成交及追高风险。" },
 };
 
 const dashboardRangeDays = {
@@ -54,12 +77,11 @@ const dashboardRangeDays = {
 setupNavigation();
 setupDashboard();
 setupMarketActions();
-setupEvaluationActions();
-setupBacktestActions();
-setupPortfolioActions();
 setTradeDate();
-setDefaultFormDates();
-loadDashboard();
+window.addEventListener("DOMContentLoaded", () => {
+  navigateTo(window.location.hash.slice(1) || "overview");
+});
+window.addEventListener("hashchange", () => navigateTo(window.location.hash.slice(1) || "overview"));
 
 function setupNavigation() {
   document.querySelectorAll("[data-page]").forEach((node) => {
@@ -87,7 +109,9 @@ function setupNavigation() {
       return;
     }
     symbolInput.value = symbol;
-    navigateTo("market");
+    costPriceInput.value = "";
+    quantityInput.value = "";
+    navigateTo("market", "single");
     setMode("single");
     form.requestSubmit();
   });
@@ -97,24 +121,12 @@ function setupNavigation() {
       loadDashboard();
       return;
     }
-    if (currentPage === "portfolios") {
-      loadPortfolios(currentPortfolioId);
-      return;
-    }
-    if (currentPage === "experiments") {
-      loadExperimentHistory();
-      return;
-    }
-    if (currentPage === "client") {
+    if (["settings", "trade", "automation"].includes(currentPage)) {
       loadClientConnection();
       return;
     }
-    if (currentPage === "research" || currentPage === "backtest") {
-      showToast("重新提交当前表单即可刷新最新公开行情结果。");
-      return;
-    }
     if (currentMarketMode === "scan") {
-      refreshMarketScanStatus();
+      startMarketScan();
       return;
     }
     showToast("请输入股票代码并重新分析，以刷新最新公开行情。");
@@ -122,6 +134,8 @@ function setupNavigation() {
 }
 
 function setupDashboard() {
+  document.querySelector("#dashboard-source").addEventListener("change", () => loadDashboard());
+  document.querySelector("#dashboard-refresh").addEventListener("click", () => loadDashboard());
   document.querySelector("#go-market-button").addEventListener("click", () => navigateTo("market"));
   document.querySelector("#onboarding-market-button").addEventListener("click", () => navigateTo("market"));
   document.querySelectorAll("[data-range]").forEach((node) => {
@@ -134,6 +148,7 @@ function setupDashboard() {
     if (currentPage === "overview") {
       const activeRange = document.querySelector("[data-range].active")?.dataset.range || "ytd";
       renderEquityChart(equityPayload, activeRange);
+      drawRiskRadar();
     } else if (currentPage === "market" && !adviceView.classList.contains("hidden") && adviceView.dataset.chart) {
       drawStockChart(JSON.parse(adviceView.dataset.chart));
     }
@@ -143,15 +158,49 @@ function setupDashboard() {
 function setupMarketActions() {
   singleTab.addEventListener("click", () => setMode("single"));
   scanTab.addEventListener("click", () => setMode("scan"));
+  algorithmInput.addEventListener("change", () => {
+    cancelSingleAnalysis();
+    setState("empty");
+    if (currentPage === "market" && currentMarketMode === "single" && isValidSymbol(symbolInput.value.trim())) {
+      form.requestSubmit();
+    }
+  });
+  symbolInput.addEventListener("input", () => {
+    cancelSingleAnalysis();
+    setState("empty");
+  });
+  const poolTabs = [...document.querySelectorAll("[data-market-pool]")];
+  poolTabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => {
+      if (tab.dataset.marketPool !== currentMarketPool) startMarketScan(tab.dataset.marketPool);
+    });
+    tab.addEventListener("keydown", event => {
+      let next;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % poolTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index + poolTabs.length - 1) % poolTabs.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = poolTabs.length - 1;
+      else return;
+      event.preventDefault();
+      poolTabs[next].focus();
+      poolTabs[next].click();
+    });
+  });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    cancelSingleAnalysis();
     if (!isValidSymbol(symbolInput.value.trim())) {
       showMarketError("股票代码必须是 6 位数字。");
       symbolInput.focus();
       return;
     }
 
+    const version = singleAnalysisVersion;
+    const controller = new AbortController();
+    singleAnalysisController = controller;
+    const symbol = symbolInput.value.trim();
+    const algorithm = algorithmInput.value;
     setState("loading");
     button.disabled = true;
     button.textContent = "分析中...";
@@ -159,26 +208,39 @@ function setupMarketActions() {
     try {
       const response = await fetch("/api/advise", {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          symbol: symbolInput.value.trim(),
-          algorithm: algorithmInput.value,
+          symbol,
+          algorithm,
         }),
       });
       const payload = await response.json();
+      if (version !== singleAnalysisVersion) return;
       if (!response.ok || !payload.ok) {
         throw new Error(readError(payload, "分析失败"));
       }
+      if (!payload.advice?.indicators || !payload.advice?.ml_prediction) {
+        throw new Error("当前算法的有效行情或模型样本不足，无法生成分析。可更换算法或补充行情后重试。");
+      }
+      const sellAdvice = await loadSellAdvice(symbol, controller.signal);
+      if (version !== singleAnalysisVersion) return;
       renderAdvice(payload);
-      await loadSellAdvice();
+      renderSellAdvice(sellAdvice);
       setState("result");
       updateGlobalTime(payload.advice?.indicators?.analysis_date);
-      requestAnimationFrame(() => drawStockChart(payload.chart));
+      requestAnimationFrame(() => {
+        if (version === singleAnalysisVersion) drawStockChart(payload.chart);
+      });
     } catch (error) {
+      if (version !== singleAnalysisVersion || error.name === "AbortError") return;
       showMarketError(error.message);
     } finally {
-      button.disabled = false;
-      button.textContent = "开始分析";
+      if (version === singleAnalysisVersion) {
+        singleAnalysisController = null;
+        button.disabled = false;
+        button.textContent = "开始分析";
+      }
     }
   });
 
@@ -192,19 +254,21 @@ function setupMarketActions() {
   });
 }
 
-function navigateTo(page) {
-  const targetPage = page === "risk" ? "overview" : page;
-  if (!["overview", "market", "research", "backtest", "portfolios", "experiments", "client"].includes(targetPage)) return;
+function navigateTo(page, mode = "scan") {
+  const targetPage = page === "client" ? "settings" : ["overview", "market", "trade", "automation", "settings"].includes(page) ? page : "overview";
   if (currentPage === "market" && targetPage !== "market") {
     stopMarketUpdates();
+    cancelSingleAnalysis();
   }
+  if (currentPage === "trade" && targetPage !== "trade") invalidateTradeDraft();
   currentPage = targetPage;
   document.querySelectorAll("[data-page-panel]").forEach((node) => {
     node.classList.toggle("active", node.dataset.pagePanel === targetPage);
   });
   document.querySelectorAll(".nav-item[data-page]").forEach((node) => {
-    node.classList.toggle("active", node.dataset.page === page);
+    node.classList.toggle("active", node.dataset.page === targetPage);
   });
+  window.history.replaceState(null, "", `#${targetPage}`);
   closeSidebar();
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (targetPage === "overview") {
@@ -212,18 +276,10 @@ function navigateTo(page) {
     requestAnimationFrame(() => renderEquityChart(equityPayload, activeRange));
     loadDashboard();
   }
-  if (targetPage === "portfolios" && !portfoliosLoaded) {
-    loadPortfolios();
-  }
-  if (targetPage === "experiments") {
-    loadExperimentHistory();
-    requestAnimationFrame(drawExperimentChart);
-  }
-  if (targetPage === "client") loadClientConnection();
-  if (page === "risk") {
-    window.setTimeout(() => {
-      document.querySelector("#risk-panel")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 80);
+  if (["settings", "trade", "automation"].includes(targetPage)) loadClientConnection();
+  if (targetPage === "market") {
+    loadClientConnection();
+    setMode(mode);
   }
 }
 
@@ -234,10 +290,18 @@ function closeSidebar() {
 async function loadDashboard() {
   const requestVersion = ++dashboardRequestVersion;
   const requestedPortfolioId = currentPortfolioId;
-  const refreshButton = document.querySelector("#refresh-button");
-  refreshButton.disabled = true;
-  refreshButton.textContent = "⋯";
+  const requestedSource = document.querySelector("#dashboard-source").value;
+  const refreshButtons = [document.querySelector("#refresh-button"), document.querySelector("#dashboard-refresh")];
+  refreshButtons.forEach((button) => { button.disabled = true; button.textContent = "⋯"; });
   try {
+    if (requestedSource !== "ledger") {
+      await loadClientConnection();
+      if (requestVersion !== dashboardRequestVersion || requestedPortfolioId !== currentPortfolioId) return;
+      if (requestedSource === "client" || clientConnection?.snapshot || clientConnection?.watchlist) {
+        renderDashboardView();
+        return;
+      }
+    }
     const dashboardUrl = currentPortfolioId
       ? `/api/dashboard?portfolio_id=${encodeURIComponent(currentPortfolioId)}`
       : "/api/dashboard";
@@ -250,7 +314,8 @@ async function loadDashboard() {
     ) return;
     if (!response.ok) {
       if (response.status === 404) {
-        setDashboardEmptyState();
+        dashboardLedger = null;
+        renderDashboardView();
         return;
       }
       throw new Error("仪表盘数据暂不可用");
@@ -263,23 +328,82 @@ async function loadDashboard() {
     if (payload.ok === false) {
       throw new Error(readError(payload, "仪表盘数据暂不可用"));
     }
-    renderDashboard(payload.dashboard || payload);
+    dashboardLedger = payload.dashboard || payload;
+    renderDashboardView();
   } catch (error) {
     if (
       requestVersion !== dashboardRequestVersion
       || requestedPortfolioId !== currentPortfolioId
     ) return;
-    setDashboardEmptyState();
+    dashboardLedger = null;
+    renderDashboardView();
     showToast(error.message);
   } finally {
     if (requestVersion === dashboardRequestVersion) {
-      refreshButton.disabled = false;
-      refreshButton.textContent = "↻";
+      refreshButtons.forEach((button) => { button.disabled = false; button.textContent = "↻"; });
     }
   }
 }
 
+function renderDashboardView() {
+  renderDashboard(buildClientDashboard());
+}
+
+function buildClientDashboard() {
+  const snapshot = clientConnection?.snapshot;
+  const report = clientConnection?.risk?.snapshot_id === snapshot?.snapshot_id ? clientConnection?.risk : null;
+  const funds = snapshot?.funds;
+  const total = Number(funds?.total_assets);
+  const market = Number(funds?.market_value);
+  // 使用资产差额作配置展示，不能将客户端资金余额当成组合账本现金。
+  const allocation = Number.isFinite(total) && Number.isFinite(market) && total > 0 && total >= market
+    ? [{ name: "持仓市值", amount: market, ratio: market / total },
+      { name: "资产差额（总资产 − 市值）", amount: total - market, ratio: (total - market) / total }]
+    : [];
+  return {
+    source: "client",
+    summary: {
+      total_assets: funds?.total_assets, market_value: funds?.market_value,
+      available_cash: funds?.available_cash, position_count: snapshot ? snapshot.positions.length : null,
+      total_assets_note: snapshot ? "平安证券 · 客户端显示值" : "尚未同步资金与持仓",
+      daily_profit_note: "客户端持仓市值",
+      total_return_note: "客户端可用金额",
+      max_drawdown_note: "持仓证券数量，不含自选股",
+    },
+    equity: report?.history_curve || [], allocation, strategies: [],
+    risk: report || { scope: "current_holdings", sample_status: "等待同步分析", risk_level_text: "待计算",
+      explanation: "尚无当前持仓风险分析；账户历史净值未接入。" },
+    updated_at: snapshot?.captured_at || clientConnection?.watchlist?.captured_at,
+  };
+}
+
+function setDashboardContext(isClient) {
+  dashboardShowsClient = isClient;
+  setText("#daily-profit-label", isClient ? "持仓市值" : "今日收益");
+  setText("#total-return-label", isClient ? "可用金额" : "累计收益率");
+  setText("#max-drawdown-label", isClient ? "持仓只数" : "最大回撤");
+  setText("#equity-title", isClient ? "当前持仓历史情景" : "组合净值曲线");
+  setText("#equity-empty-title", isClient ? "暂无完整历史情景" : "暂无组合净值");
+  setText("#equity-series-label", isClient ? "当前权重重放（非账户净值）" : "策略净值");
+  document.querySelector("#equity-chart").setAttribute("aria-label",
+    isClient ? "当前持仓历史情景与基准，不是账户净值" : "组合净值曲线");
+  document.querySelector(".equity-panel .info-tip").title = isClient
+    ? "每日按当前总资产权重重放历史价格，非账户真实净值" : "组合净值与基准指数归一化后对比";
+  document.querySelector("#risk-panel .info-tip").title = isClient
+    ? "当前持仓结构与历史价格情景估计，非账户实际业绩" : "风险指标由组合历史净值计算";
+  document.querySelector("#dashboard-client-auto").disabled = clientBusy || !clientConnection?.capabilities.read_account
+    || document.querySelector("#dashboard-source").value === "ledger";
+  document.querySelector("#dashboard-public-history").disabled = clientBusy || !clientConnection?.request_token
+    || document.querySelector("#dashboard-source").value === "ledger";
+  document.querySelector("#dashboard-client-details").classList.toggle("hidden", !isClient);
+  document.querySelector("#onboarding-banner").classList.toggle("hidden", isClient);
+  document.querySelector("#dashboard-source-status").classList.remove("client-channel-error");
+  document.querySelector("#overview-page").classList.remove("dashboard-stale");
+  if (!isClient) setText("#dashboard-source-status", "组合账本");
+}
+
 function setDashboardEmptyState() {
+  setDashboardContext(false);
   equityPayload = null;
   setText("#total-assets", "--");
   setText("#daily-profit", "--");
@@ -300,24 +424,30 @@ function setDashboardEmptyState() {
 }
 
 function renderDashboard(dashboard) {
+  const isClient = dashboard.source === "client";
+  setDashboardContext(isClient);
   const summary = dashboard.summary || {};
   const hasPortfolio = Boolean(dashboard.portfolio || summary.total_assets !== null && summary.total_assets !== undefined);
   setText("#total-assets", formatCurrency(summary.total_assets));
-  setText("#daily-profit", formatSignedCurrency(summary.daily_profit));
-  setText("#total-return", formatOptionalPercent(summary.total_return));
-  setText("#max-drawdown", formatOptionalPercent(summary.max_drawdown));
+  setText("#daily-profit", isClient ? formatCurrency(summary.market_value) : formatSignedCurrency(summary.daily_profit));
+  setText("#total-return", isClient ? formatCurrency(summary.available_cash) : formatOptionalPercent(summary.total_return));
+  setText("#max-drawdown", isClient ? formatOptionalInteger(summary.position_count) : formatOptionalPercent(summary.max_drawdown));
   setText("#total-assets-note", summary.total_assets_note || (hasPortfolio ? "组合最新估值" : "尚未创建组合"));
   setText("#daily-profit-note", summary.daily_profit_note || (hasPortfolio ? "相较上一交易日" : "暂无有效净值"));
   setText("#total-return-note", summary.total_return_note || (hasPortfolio ? "相较组合初始净值" : "暂无组合收益记录"));
   setText("#max-drawdown-note", summary.max_drawdown_note || (hasPortfolio ? "历史净值最大跌幅" : "净值样本不足"));
-  const benchmarkSymbol = dashboard.portfolio?.benchmark_symbol;
+  const benchmarkSymbol = isClient ? dashboard.risk?.benchmark_symbol : dashboard.portfolio?.benchmark_symbol;
   setText(
     "#equity-benchmark-label",
     benchmarkSymbol ? `基准 ${benchmarkSymbol}` : "比较基准",
   );
   setText(
     "#equity-empty-message",
-    dashboard.risk?.stale
+    isClient
+      ? (dashboard.risk?.status === "ANALYZING" ? "正在获取公开历史行情并计算风险。"
+        : dashboard.risk?.status === "LOCAL_ONLY" ? "公开行情查询未授权，仅展示本地持仓结构指标。"
+        : "历史情景样本不足或行情缺失；账户历史净值未接入。")
+      : dashboard.risk?.stale
       ? "净值与当前流水或行情版本不一致，请在组合页执行刷新。"
       : hasPortfolio
         ? "录入交易并刷新行情后，这里会显示净值与比较基准。"
@@ -333,25 +463,185 @@ function renderDashboard(dashboard) {
   if (dashboard.updated_at || summary.trade_date) {
     updateGlobalTime(dashboard.updated_at || summary.trade_date);
   } else {
-    setText("#global-update-time", "尚无组合数据");
+    setText("#global-update-time", isClient ? "尚未同步客户端数据" : "尚无组合数据");
   }
   setText("#trade-date", summary.trade_date ? `交易日 ${summary.trade_date}` : "--");
+  if (isClient) {
+    renderDashboardClientDetails();
+    renderDashboardClientFreshness();
+  } else {
+    setText("#dashboard-source-status", `组合账本 · ${dashboard.portfolio?.name || "尚未创建组合"}`);
+  }
+}
+
+function renderDashboardClientDetails() {
+  const snapshot = clientConnection?.snapshot;
+  setText("#dashboard-cash-balance", formatCurrency(snapshot?.funds.cash_balance));
+  setText("#dashboard-withdrawable", formatCurrency(snapshot?.funds.withdrawable_cash));
+  setText("#dashboard-reconciliation", clientFundsReconciliationNote(snapshot));
+  const positions = document.querySelector("#dashboard-positions");
+  positions.replaceChildren();
+  if (!snapshot?.positions.length) {
+    appendEmptyRow(positions, 7, snapshot ? "该快照持仓为零，已核对账户市值。" : "尚未同步资金与持仓。");
+  } else {
+    snapshot.positions.forEach((position) => {
+      const row = document.createElement("tr");
+      [position.symbol, position.name, position.quantity, position.available, position.price,
+        position.cost, formatCurrency(position.market_value)].forEach((value) => appendCell(row, value));
+      positions.appendChild(row);
+    });
+  }
+  renderHoldingDecisions();
+  const watchlist = clientConnection?.watchlist;
+  setText("#dashboard-watchlist-title", watchlist ? `自选股 · ${watchlist.group_name} · ${watchlist.declared_count} 只` : "自选股");
+  const stocks = document.querySelector("#dashboard-watchlist");
+  stocks.replaceChildren();
+  if (!watchlist?.stocks.length) {
+    appendEmptyRow(stocks, 2, watchlist ? "该分组为零只，已核对客户端数量。" : "尚未同步自选股。");
+  } else {
+    watchlist.stocks.forEach((stock) => {
+      const row = document.createElement("tr");
+      appendCell(row, stock.symbol);
+      appendCell(row, stock.name);
+      stocks.appendChild(row);
+    });
+  }
+}
+
+function renderDashboardClientFreshness() {
+  if (!dashboardShowsClient) return;
+  const snapshot = clientConnection?.snapshot;
+  const stale = clientSnapshotStale("positions");
+  const captured = snapshot ? new Date(snapshot.captured_at).toLocaleString("zh-CN") : "";
+  const status = !snapshot ? "尚未同步资金与持仓" : stale ? "已过期，仅供历史参考" : "最近读取有效，非实时行情";
+  setText("#dashboard-source-status", `同花顺 · 平安证券 · ${status}${captured ? ` · 读取时间 ${captured}` : ""}${clientConnection?.last_error ? ` · ${clientConnection.last_error.message}` : ""}`);
+  document.querySelector("#dashboard-source-status").classList.toggle("client-channel-error", Boolean(snapshot && stale));
+  document.querySelector("#overview-page").classList.toggle("dashboard-stale", Boolean(snapshot && stale));
+  setText("#trade-date", snapshot ? `账户快照 · ${captured}` : "账户快照尚未同步");
+  const watchlist = clientConnection?.watchlist;
+  const watchlistStale = clientSnapshotStale("watchlist");
+  setText("#dashboard-watchlist-status", !watchlist ? "尚未同步"
+    : `${watchlistStale ? "已过期，仅供历史参考" : "最近读取有效"} · ${new Date(watchlist.captured_at).toLocaleString("zh-CN")}`);
+  document.querySelector("#dashboard-watchlist-status").classList.toggle("client-channel-error", Boolean(watchlist && watchlistStale));
+  renderRiskHistoryDetail();
+  renderHoldingDecisions();
+}
+
+function renderHoldingDecisions() {
+  const snapshot = clientConnection?.snapshot;
+  const report = clientConnection?.holding_advice;
+  const stale = clientSnapshotStale("positions");
+  const matching = snapshot?.snapshot_id && report?.snapshot_id === snapshot.snapshot_id
+    && Array.isArray(report.items);
+  const list = document.querySelector("#holding-decisions");
+  list.replaceChildren();
+  setText("#holding-advice-status", !snapshot ? "等待账户同步" : stale ? "快照已过期" :
+    clientConnection?.risk?.status === "ANALYZING" ? "正在补充行情分析" : "仅供人工判断");
+  if (!snapshot?.positions.length) {
+    const empty = document.createElement("p");
+    empty.className = "inline-empty";
+    empty.textContent = snapshot ? "当前没有持仓。" : "尚未同步账户。";
+    list.append(empty);
+    return;
+  }
+  for (const position of snapshot.positions) {
+    const advice = matching ? report.items.find(item => item.symbol === position.symbol) : null;
+    const row = document.createElement("article");
+    row.className = "holding-decision";
+    const stock = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = position.name;
+    const code = document.createElement("small");
+    code.textContent = position.symbol;
+    const industry = document.createElement("small");
+    industry.className = "stock-industry";
+    industry.textContent = industryText(advice);
+    industry.title = industrySource(advice);
+    stock.append(name, code, industry);
+    const price = document.createElement("div");
+    const priceValue = document.createElement("strong");
+    priceValue.textContent = formatCurrency(position.price);
+    const pnl = document.createElement("small");
+    pnl.textContent = `浮动盈亏 ${formatOptionalPercent(advice?.holding_return)}`;
+    price.append(priceValue, pnl);
+    const quantity = document.createElement("div");
+    quantity.textContent = `${position.quantity} 股`;
+    const available = document.createElement("small");
+    available.textContent = `可卖 ${position.available} 股`;
+    quantity.append(available);
+    const badge = document.createElement("strong");
+    badge.className = "holding-action";
+    badge.dataset.action = stale ? "STALE" : advice?.action || "NO_DATA";
+    badge.textContent = stale ? "需重新同步" : advice?.decision || sellActionText(advice?.action || "NO_DATA");
+    const note = document.createElement("p");
+    note.className = "holding-reason";
+    note.textContent = stale ? "旧快照不作为当前卖出依据。" : [
+      advice?.reason || "等待持仓分析。",
+      advice?.execution_note || "",
+      advice?.as_of_date ? `技术行情截至 ${advice.as_of_date}。` : "仅检查客户端显示的盈亏线。",
+      advice?.history_note || (advice?.status === "LOCAL_ONLY" && !clientConnection.public_history_enabled ? "公开持仓行情未授权。" : ""),
+    ].filter(Boolean).join(" ");
+    row.append(stock, price, quantity, badge, note);
+    if (!stale && advice) {
+      const levels = document.createElement("dl");
+      levels.className = "holding-levels";
+      for (const [label, value] of [["亏损提醒价", formatCurrency(advice.stop_loss_price)],
+        ["止盈观察价", formatCurrency(advice.profit_watch_price)], ["单股仓位", formatOptionalPercent(advice.position_weight)]]) {
+        const group = document.createElement("div"), dt = document.createElement("dt"), dd = document.createElement("dd");
+        dt.textContent = label;
+        dd.textContent = value;
+        group.append(dt, dd);
+        levels.append(group);
+      }
+      const next = document.createElement("p");
+      next.className = "holding-next-step";
+      next.textContent = advice.next_step || "待补充该股行情后重新评估。";
+      row.append(levels, next);
+    }
+    list.append(row);
+  }
+}
+
+function industryText(stock) {
+  if (stock?.industry) return stock.industry;
+  return stock?.industry_state === "CONFLICT" ? "行业分类待核实"
+    : stock?.industry_state === "PENDING" ? "行业更新中" : "行业未获取";
+}
+
+function industrySource(stock) {
+  return [stock?.industry_source || "新浪行业分类",
+    stock?.industry_as_of ? `读取时间 ${new Date(stock.industry_as_of).toLocaleString("zh-CN")}` : "尚无已验证行业"].join(" · ");
 }
 
 function renderRisk(risk) {
+  const isClient = risk.scope === "current_holdings";
+  riskRadarPayload = isClient ? risk : null;
+  document.querySelector("#risk-radar").classList.toggle("client-risk-chart", isClient);
+  document.querySelector("#risk-radar-canvas").classList.toggle("hidden", !isClient);
+  document.querySelector("#risk-radar-scale").classList.toggle("hidden", !isClient);
+  for (const [id, label] of [["volatility", isClient ? "年化波动（情景）" : "年化波动率"],
+    ["sharpe", isClient ? "股票仓位" : "夏普比率"], ["beta", isClient ? "Beta（沪深300）" : "Beta"],
+    ["var", isClient ? "单日 VaR(95%)" : "VaR(95%)"],
+    ["win-rate", isClient ? "最大单股占比" : "完整持仓周期胜率"],
+    ["profit-loss", isClient ? "当前不可卖占比" : "盈亏比"]]) {
+    setText(`#risk-${id}-label`, label);
+  }
   setText("#risk-volatility", formatOptionalPercent(risk.annualized_volatility));
-  setText("#risk-sharpe", formatOptionalNumber(risk.sharpe_ratio));
+  setText("#risk-sharpe", isClient ? formatOptionalPercent(risk.stock_exposure) : formatOptionalNumber(risk.sharpe_ratio));
   setText("#risk-beta", formatOptionalNumber(risk.beta));
   setText("#risk-var", formatOptionalPercent(risk.var_95));
-  setText("#risk-win-rate", formatOptionalPercent(risk.win_rate));
-  setText("#risk-profit-loss", formatOptionalNumber(risk.profit_loss_ratio));
+  setText("#risk-win-rate", formatOptionalPercent(isClient ? risk.max_position_weight : risk.win_rate));
+  setText("#risk-profit-loss", isClient ? formatOptionalPercent(risk.locked_weight) : formatOptionalNumber(risk.profit_loss_ratio));
   setText("#risk-sample-status", risk.sample_status || "样本不足");
   setText("#risk-state", risk.risk_level_text || risk.risk_level || "待计算");
   setText("#risk-state-note", risk.explanation || "暂无足够数据计算组合风险");
   setText("#risk-radar > strong", risk.risk_level_text || "待计算");
+  renderRiskHistoryDetail();
+  requestAnimationFrame(drawRiskRadar);
 }
 
 function resetRisk() {
+  renderRisk({});
   [
     "#risk-volatility",
     "#risk-sharpe",
@@ -364,6 +654,86 @@ function resetRisk() {
   setText("#risk-state", "待计算");
   setText("#risk-state-note", "创建组合并录入交易后开始计算");
   setText("#risk-radar > strong", "待计算");
+}
+
+function renderRiskHistoryDetail() {
+  const risk = riskRadarPayload;
+  const node = document.querySelector("#risk-history-detail");
+  node.classList.toggle("hidden", !risk);
+  if (!risk) return;
+  const stale = clientSnapshotStale("positions");
+  const warnings = risk.status === "ANALYZING" ? [] : risk.warnings || [];
+  node.textContent = [
+    stale ? "历史快照风险，不能代表当前账户。" : "",
+    risk.status === "ANALYZING" ? "正在获取公开历史行情。" : "",
+    risk.as_of_date ? `行情截止 ${risk.as_of_date}，共同样本 ${risk.sample_size} 日。` : "",
+    risk.explanation || "", ...warnings,
+  ].filter(Boolean).join(" ");
+  node.classList.toggle("client-channel-error", stale || risk.status === "PARTIAL");
+}
+
+function drawRiskRadar() {
+  const risk = riskRadarPayload;
+  if (!risk || currentPage !== "overview") return;
+  const canvas = document.querySelector("#risk-radar-canvas");
+  const ctx = prepareCanvas(canvas);
+  const width = canvas.clientWidth, height = canvas.clientHeight;
+  if (!width || !height) return;
+  const axes = [
+    ["股票仓位", risk.stock_exposure, 1], ["单股集中", risk.max_position_weight, 1],
+    ["不可卖", risk.locked_weight, 1], ["年化波动", risk.annualized_volatility, .6],
+    ["日 VaR", risk.var_95, .1],
+  ];
+  const cx = width / 2, cy = height / 2, radius = Math.min(width, height) * .29;
+  const vector = (index, scale) => {
+    const angle = -Math.PI / 2 + index * Math.PI * 2 / axes.length;
+    return [cx + Math.cos(angle) * radius * scale, cy + Math.sin(angle) * radius * scale];
+  };
+  ctx.clearRect(0, 0, width, height);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#d8e1ea";
+  for (const scale of [.25, .5, .75, 1]) {
+    ctx.beginPath();
+    axes.forEach((_, index) => {
+      const point = vector(index, scale);
+      if (index === 0) ctx.moveTo(...point); else ctx.lineTo(...point);
+    });
+    ctx.closePath();
+    ctx.stroke();
+  }
+  const values = axes.map(([, value, maximum]) => {
+    const number = optionalFiniteNumber(value);
+    return number === null ? null : Math.min(1, Math.max(0, number / maximum));
+  });
+  canvas.dataset.availableAxes = String(values.filter((value) => value !== null).length);
+  canvas.setAttribute("aria-label", axes.map(([name, value]) => `${name} ${formatOptionalPercent(value)}`).join("；"));
+  axes.forEach(([name, value], index) => {
+    const point = vector(index, 1);
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(...point); ctx.stroke();
+    const label = vector(index, 1.55);
+    const x = index === 0 ? cx : index <= 2 ? width - 3 : 3;
+    const y = Math.max(12, Math.min(height - 23, label[1]));
+    ctx.textAlign = index === 0 ? "center" : index <= 2 ? "right" : "left";
+    ctx.fillStyle = "#586575"; ctx.font = "10px sans-serif"; ctx.fillText(name, x, y);
+    ctx.fillStyle = "#24333e"; ctx.font = "bold 10px sans-serif";
+    ctx.fillText(formatOptionalPercent(value), x, y + 13);
+  });
+  ctx.strokeStyle = "#149b81";
+  ctx.fillStyle = "rgba(20,155,129,0.20)";
+  ctx.lineWidth = 2;
+  if (values.every((value) => value !== null)) {
+    ctx.beginPath();
+    values.forEach((value, index) => {
+      if (index === 0) ctx.moveTo(...vector(index, value)); else ctx.lineTo(...vector(index, value));
+    });
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  // 缺失轴只保留已知点，不把未知风险画成零或闭合成低风险区域。
+  ctx.fillStyle = "#149b81";
+  values.forEach((value, index) => {
+    if (value === null) return;
+    ctx.beginPath(); ctx.arc(...vector(index, value), 3, 0, Math.PI * 2); ctx.fill();
+  });
 }
 
 function renderAllocation(items) {
@@ -507,10 +877,10 @@ function drawLineChart(canvas, points) {
   drawSeries(ctx, points, "benchmark", "#08aeb1", width, height, pad, low, high, false);
   drawSeries(ctx, points, "strategy", "#155eef", width, height, pad, low, high, true);
 
-  const labelIndexes = [0, Math.floor((points.length - 1) / 2), points.length - 1];
-  labelIndexes.forEach((index, labelIndex) => {
-    const x = pad.left + (index / (points.length - 1)) * (width - pad.left - pad.right);
-    ctx.textAlign = labelIndex === 0 ? "left" : labelIndex === 2 ? "right" : "center";
+  const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  labelIndexes.forEach((index) => {
+    const x = pad.left + (index / Math.max(1, points.length - 1)) * (width - pad.left - pad.right);
+    ctx.textAlign = index === 0 ? "left" : index === points.length - 1 ? "right" : "center";
     ctx.fillStyle = "#8a95a6";
     ctx.fillText(points[index].date, x, height - 8);
   });
@@ -518,7 +888,7 @@ function drawLineChart(canvas, points) {
 }
 
 function drawSeries(ctx, points, key, color, width, height, pad, low, high, withFill) {
-  const x = (index) => pad.left + (index / (points.length - 1)) * (width - pad.left - pad.right);
+  const x = (index) => pad.left + (index / Math.max(1, points.length - 1)) * (width - pad.left - pad.right);
   const y = (value) => pad.top + (1 - (value - low) / (high - low)) * (height - pad.top - pad.bottom);
 
   ctx.beginPath();
@@ -1231,29 +1601,39 @@ function setMetricTone(selector, value) {
   node.classList.add(number > 0 ? "positive-value" : "negative-value");
 }
 
+function cancelSingleAnalysis() {
+  singleAnalysisVersion++;
+  singleAnalysisController?.abort();
+  singleAnalysisController = null;
+  button.disabled = false;
+  button.textContent = "开始分析";
+}
+
 function setMode(mode) {
+  cancelSingleAnalysis();
   currentMarketMode = mode;
   const isScan = mode === "scan";
   singleTab.classList.toggle("active", !isScan);
   scanTab.classList.toggle("active", isScan);
   form.classList.toggle("hidden", isScan);
+  document.querySelector("#single-stock-picker").classList.toggle("hidden", isScan);
   scanForm.classList.toggle("hidden", !isScan);
   if (isScan) {
     setState("scan");
-    refreshMarketScanStatus();
-    startMarketUpdates();
+    refreshMarketScanStatus(true);
     return;
   }
   stopMarketUpdates();
   setState("empty");
 }
 
-async function loadSellAdvice() {
+async function loadSellAdvice(symbol, signal) {
   const response = await fetch("/api/sell-advice", {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      symbol: symbolInput.value.trim(),
+      symbol,
       cost_price: parseOptionalNumber(costPriceInput.value),
       quantity: parseOptionalNumber(quantityInput.value),
       max_loss_rate: parseOptionalNumber(maxLossRateInput.value) || 0.08,
@@ -1264,7 +1644,7 @@ async function loadSellAdvice() {
   if (!response.ok || !payload.ok) {
     throw new Error(readError(payload, "卖出判断失败"));
   }
-  renderSellAdvice(payload.sell_advice);
+  return payload.sell_advice;
 }
 
 function renderSellAdvice(sellAdvice) {
@@ -1306,6 +1686,7 @@ function sellActionText(action) {
     TAKE_PROFIT: "止盈/分批减仓",
     STOP_LOSS: "止损",
     NO_POSITION: "仅技术风险提示",
+    NO_DATA: "暂不能判断",
   };
   return actionMap[action] || action;
 }
@@ -1398,11 +1779,25 @@ function renderFundFlow(fundFlow) {
   setText("#fund-flow-explanation", fundFlow.explanation);
 }
 
-async function startMarketScan() {
+async function startMarketScan(pool = currentMarketPool || "gainers") {
+  if (marketScanStarting && pool === currentMarketPool) return;
+  const focusedTab = document.activeElement?.matches("[data-market-pool]") ? document.activeElement : null;
+  currentMarketPool = pool;
+  marketRunStartVersion = 0;
+  stopMarketUpdates();
   setState("scan");
+  renderMarketScan({ pool, running: true, status: "loading_universe", top_results: [],
+    scanned_count: 0, status_message: "正在启动所选股票池" });
   const scanButton = document.querySelector("#scan-once-button");
   scanButton.disabled = true;
+  scanAutoButton.disabled = true;
   scanButton.textContent = "启动中...";
+  if (marketScanStarting) {
+    marketPendingPool = pool;
+    return;
+  }
+  marketScanStarting = true;
+  const generation = marketRequestGeneration;
 
   try {
     const response = await fetch("/api/market-scan/start", {
@@ -1411,57 +1806,125 @@ async function startMarketScan() {
       body: JSON.stringify({
         algorithm: scanAlgorithmInput.value,
         top: 10,
+        pool,
       }),
     });
     const payload = await response.json();
+    if (generation !== marketRequestGeneration) return;
     if (!response.ok || !payload.ok) {
       throw new Error(readError(payload, "启动扫描失败"));
     }
-    renderMarketScan(payload.snapshot);
-    startMarketUpdates();
-    setState("scan");
+    const snapshot = payload.snapshot;
+    // A warm scan can finish before POST returns; replay it without first jumping to the final table.
+    const initial = snapshot.scanned_count > 0 || snapshot.deferred_count > 0 ? { ...snapshot,
+      running: true, status: "scanning", status_message: "正在接收逐股分析结果",
+      scanned_count: 0, successful_count: 0, failed_count: 0, deferred_count: 0, cached_count: 0,
+      top_results: [], last_completed: "", version: snapshot.start_version,
+    } : snapshot;
+    if (!renderMarketScan(initial)) throw new Error("股票池状态已改变，请重新选择。");
+    if (initial.running) startMarketUpdates(snapshot.start_version);
+    if (currentPage === "market" && currentMarketMode === "scan") setState("scan");
   } catch (error) {
+    if (generation !== marketRequestGeneration) return;
+    scanButton.disabled = false;
+    scanAutoButton.disabled = true;
     showMarketError(error.message);
   } finally {
-    scanButton.disabled = false;
-    scanButton.textContent = "启动全 A 扫描";
+    marketScanStarting = false;
+    if (marketPendingPool) {
+      const nextPool = marketPendingPool;
+      marketPendingPool = null;
+      // Serialize start requests so a late POST cannot restart an obsolete selection on the server.
+      startMarketScan(nextPool);
+      return;
+    }
+    if (focusedTab && document.activeElement === document.body && currentPage === "market" && currentMarketMode === "scan") {
+      focusedTab.focus({ preventScroll: true });
+    }
+    scanButton.textContent = "↻ 更新候选";
   }
 }
 
 async function stopMarketScan() {
   try {
-    await fetch("/api/market-scan/stop", { method: "POST" });
-    stopMarketUpdates();
-    setText("#scan-refresh-status", "已停止");
+    const response = await fetch("/api/market-scan/stop", { method: "POST" });
+    if (!response.ok) throw new Error("停止失败");
+    setText("#scan-refresh-status", "停止中");
+    startMarketUpdates();
   } catch {
     showToast("停止请求失败，请稍后重试。");
   }
 }
 
-function startMarketUpdates() {
+function startMarketUpdates(afterVersion = null) {
+  if (currentPage !== "market" || currentMarketMode !== "scan") return;
+  if (Number.isInteger(afterVersion)) marketUpdateVersion = afterVersion;
+  if (marketEventSource || marketPollTimer !== null || marketPollController) return;
   if ("EventSource" in window) {
-    startMarketStream();
+    startMarketStream(marketUpdateVersion);
   } else {
-    refreshMarketScanStatus();
+    scheduleMarketPoll();
   }
 }
 
 function stopMarketUpdates() {
+  marketRequestGeneration++;
   stopMarketStream();
+  clearTimeout(marketPollTimer);
+  marketPollTimer = null;
+  marketPollController?.abort();
+  marketPollController = null;
+  cancelAnimationFrame(marketRenderFrame);
+  marketRenderFrame = null;
+  marketRenderQueue = [];
 }
 
-function startMarketStream() {
+function scheduleMarketPoll(delay = 0) {
+  if (marketPollTimer !== null || marketPollController || currentPage !== "market" || currentMarketMode !== "scan") return;
+  marketPollTimer = setTimeout(() => {
+    marketPollTimer = null;
+    refreshMarketScanStatus();
+  }, delay);
+}
+
+function queueMarketScan(snapshot) {
+  if (snapshot.pool !== currentMarketPool || snapshot.start_version < marketRunStartVersion) return false;
+  if (Number.isInteger(snapshot.version) && snapshot.version <= marketUpdateVersion) return true;
+  marketUpdateVersion = snapshot.version;
+  marketRenderQueue.push(snapshot);
+  if (marketRenderFrame === null) marketRenderFrame = requestAnimationFrame(renderNextMarketUpdate);
+  return true;
+}
+
+function renderNextMarketUpdate() {
+  marketRenderFrame = null;
+  const snapshot = marketRenderQueue.shift();
+  if (snapshot) renderMarketScan(snapshot);
+  // Yield between completions so a burst of SSE/cache results cannot collapse into one paint.
+  if (marketRenderQueue.length) marketRenderFrame = requestAnimationFrame(renderNextMarketUpdate);
+}
+
+function startMarketStream(afterVersion = null) {
   if (marketEventSource) return;
-  marketEventSource = new EventSource("/api/market-scan/stream");
-  marketEventSource.onmessage = (event) => {
-    const payload = JSON.parse(event.data);
-    if (payload.ok) {
-      renderMarketScan(payload.snapshot);
+  const cursor = Number.isInteger(afterVersion) ? `?after=${afterVersion}` : "";
+  const source = new EventSource(`/api/market-scan/stream${cursor}`);
+  const generation = marketRequestGeneration;
+  marketEventSource = source;
+  source.onmessage = (event) => {
+    if (marketEventSource !== source || generation !== marketRequestGeneration) return;
+    try {
+      const payload = JSON.parse(event.data);
+      if (!payload.ok) throw new Error("无法读取候选状态");
+      queueMarketScan(payload.snapshot);
+    } catch {
+      stopMarketStream();
+      scheduleMarketPoll();
     }
   };
-  marketEventSource.onerror = () => {
+  source.onerror = () => {
+    if (marketEventSource !== source || generation !== marketRequestGeneration) return;
     stopMarketStream();
-    refreshMarketScanStatus();
+    scheduleMarketPoll();
   };
 }
 
@@ -1471,66 +1934,233 @@ function stopMarketStream() {
   marketEventSource = null;
 }
 
-async function refreshMarketScanStatus() {
+async function refreshMarketScanStatus(autoStart = false) {
+  if (autoStart) stopMarketUpdates();
+  const generation = marketRequestGeneration;
+  const controller = new AbortController();
+  marketPollController = controller;
   try {
-    const response = await fetch("/api/market-scan/status");
+    const cursor = !autoStart && Number.isInteger(marketUpdateVersion) ? `?after=${marketUpdateVersion}` : "";
+    const response = await fetch(`/api/market-scan/status${cursor}`, { signal: controller.signal, cache: "no-store" });
     const payload = await response.json();
-    if (payload.ok) {
-      renderMarketScan(payload.snapshot);
+    if (generation !== marketRequestGeneration || marketScanStarting) return;
+    marketPollController = null;
+    if (response.ok && payload.ok) {
+      const snapshot = payload.snapshot;
+      if (currentPage !== "market" || currentMarketMode !== "scan") return;
+      if (autoStart) {
+        if (!renderMarketScan(snapshot)) return;
+        marketUpdateVersion = snapshot.version;
+      } else if (!queueMarketScan(snapshot)) return;
+      const checked = marketAutoChecked;
+      marketAutoChecked = true;
+      if (autoStart && !checked && (snapshot.status === "idle"
+          || snapshot.status === "finished" && Date.now() - Date.parse(`${snapshot.last_finished_at.replace(" ", "T")}+08:00`) > 86400000)) {
+        await startMarketScan();
+      } else if (snapshot.running) {
+        if (autoStart) startMarketUpdates(); else scheduleMarketPoll();
+      }
+    } else {
+      throw new Error("无法读取候选状态");
     }
   } catch {
-    showToast("暂时无法读取扫描状态。");
+    if (generation !== marketRequestGeneration) return;
+    marketPollController = null;
+    if (!autoStart) {
+      setText("#scan-refresh-status", "连接中断，正在续接逐股进度");
+      scheduleMarketPoll(1000);
+      return;
+    }
+    document.querySelector("#scan-results").replaceChildren();
+    setText("#scan-count", "0");
+    setText("#scan-refresh-status", "读取失败");
+    setText("#scan-empty", "候选读取失败，请重试更新。");
+    document.querySelector("#scan-empty").classList.remove("hidden");
+    document.querySelector("#scan-once-button").disabled = false;
   }
 }
 
 function renderMarketScan(snapshot) {
+  const pool = snapshot.pool || "gainers";
+  if (!marketPools[pool] || currentMarketPool && pool !== currentMarketPool) return false;
+  if (Number.isInteger(snapshot.start_version) && snapshot.start_version < marketRunStartVersion) return false;
+  const newRun = Number.isInteger(snapshot.start_version) && snapshot.start_version !== marketRunStartVersion;
+  currentMarketPool = pool;
+  marketRunStartVersion = snapshot.start_version ?? marketRunStartVersion;
+  const definition = marketPools[pool];
+  document.querySelectorAll("[data-market-pool]").forEach(tab => {
+    const selected = tab.dataset.marketPool === pool;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    if (selected) scanView.setAttribute("aria-labelledby", tab.id);
+  });
+  setText("#scan-pool-title", `${definition.label}股票池`);
+  setText("#scan-scope", `范围：${definition.scope} 创业板、科创板及北交所不占名额，沿本类榜单顺延补足；全池合格股票不足时按实际数量。入池不等于买入信号。公开榜单与客户端可能存在时点和排序差异，分页并非同一时刻快照。日线来源：腾讯或东方财富完整前复权序列，非实时盘口。`);
   const results = (snapshot.top_results || [])
+    .filter(item => ["BUY", "WATCH", "HOLD", "AVOID"].includes(item.action))
     .sort((left, right) => right.score - left.score || right.probability - left.probability)
     .slice(0, 10);
+  document.querySelector("#scan-once-button").disabled = Boolean(snapshot.running);
+  scanAutoButton.disabled = !snapshot.running;
   setText("#scan-count", results.length);
   setText("#scan-fetched", snapshot.fetched_count || 0);
   setText("#scan-finished", snapshot.scanned_count);
-  setText("#scan-total", snapshot.total_count || "--");
+  setText("#scan-successful", snapshot.successful_count ?? Math.max(0, (snapshot.scanned_count || 0) - (snapshot.failed_count || 0)));
+  setText("#scan-total", snapshot.total_count ?? "--");
   setText("#scan-skipped", snapshot.skipped_count || 0);
   setText("#scan-failed", snapshot.failed_count || 0);
+  setText("#scan-deferred", snapshot.deferred_count || 0);
   setText("#scan-refresh-status", statusText(snapshot));
-  setText("#scan-meta", `MARKET SCAN · ${snapshot.last_started_at || "--"}`);
+  setText("#scan-meta", `${definition.label} · ${snapshot.last_started_at || "尚未开始"}`);
+  setText("#scan-live-update", `${snapshot.last_completed ? `最近处理：${snapshot.last_completed}` : "尚无已完成分析"} · 分析结果缓存复用 ${snapshot.cached_count || 0} 只`);
+  const target = snapshot.universe_limit || (pool.startsWith("limit_") ? 100 : 500);
+  setText("#scan-universe-status", `目标 ${target} 只 · 合格入池 ${snapshot.total_count || 0} 只 · 排名检查 ${snapshot.fetched_count || 0} 只 · 板块排除 ${snapshot.skipped_count || 0} 只 · ${snapshot.universe_source || "来源待确认"}（非同花顺客户端直读）${snapshot.universe_date ? ` · 股票池日期：${snapshot.universe_date}` : ""} · 榜单读取：${snapshot.universe_fetched_at || "尚未读取"}`);
+  const shortfall = snapshot.universe_shortfall || 0;
+  setText("#scan-coverage-note", shortfall ? `已遍历本类股票池：符合板块条件的股票共 ${snapshot.total_count || 0} 只，较目标 ${target} 只少 ${shortfall} 只。` : "");
+  document.querySelector("#scan-coverage-note").classList.toggle("hidden", shortfall === 0);
+  setText("#scan-industry-status", `行业来源：新浪行业分类 · ${snapshot.industry_status || "等待更新"}`);
 
   const tbody = document.querySelector("#scan-results");
-  tbody.innerHTML = "";
+  if (newRun) tbody.replaceChildren();
+  const focusedDetail = tbody.contains(document.activeElement) ? document.activeElement : null;
+  const kept = new Set(results.map(item => item.symbol));
+  for (const row of [...tbody.children]) if (!kept.has(row.dataset.symbol || row.dataset.detailSymbol)) row.remove();
+  const rows = new Map([...tbody.querySelectorAll(".scan-stock-row")].map(row => [row.dataset.symbol, row]));
   results.forEach((item, index) => {
-    const row = document.createElement("tr");
-    appendCell(row, String(index + 1));
-    const stockCell = document.createElement("td");
-    const symbolNode = document.createElement("strong");
-    const nameNode = document.createElement("small");
-    symbolNode.textContent = item.symbol;
-    nameNode.textContent = item.name;
-    stockCell.append(symbolNode, nameNode);
-    row.appendChild(stockCell);
-    appendCell(row, actionText[item.action] || item.action);
-    appendCell(row, String(item.score));
-    appendCell(row, formatPercent(item.probability));
-    appendCell(row, item.reason);
-    appendCell(row, item.risk);
-    tbody.appendChild(row);
+    let row = rows.get(item.symbol);
+    let detailRow = document.getElementById(`scan-detail-${item.symbol}`);
+    if (!row) {
+      row = document.createElement("tr");
+      row.className = "scan-stock-row";
+      row.dataset.symbol = item.symbol;
+      for (let cell = 0; cell < 8; cell++) row.append(document.createElement("td"));
+      row.children[1].append(document.createElement("strong"), document.createElement("small"), document.createElement("small"));
+      row.children[1].lastChild.className = "stock-industry";
+      row.children[2].append(document.createElement("span"), document.createElement("small"));
+      row.children[2].lastChild.className = "stock-quote-source";
+      row.children[4].append(document.createElement("span"), document.createElement("small"));
+      row.children[4].lastChild.className = "scan-action";
+      detailRow = document.createElement("tr");
+      detailRow.className = "scan-detail-row";
+      detailRow.id = `scan-detail-${item.symbol}`;
+      detailRow.dataset.detailSymbol = item.symbol;
+      detailRow.hidden = true;
+      const content = document.createElement("td");
+      content.colSpan = 8;
+      detailRow.append(content);
+      const detail = document.createElement("button");
+      detail.type = "button";
+      detail.className = "icon-button scan-detail-toggle";
+      detail.setAttribute("aria-controls", detailRow.id);
+      detail.setAttribute("aria-expanded", "false");
+      const icon = document.createElement("span");
+      icon.textContent = "⌄";
+      icon.setAttribute("aria-hidden", "true");
+      detail.append(icon);
+      detail.addEventListener("click", () => {
+        detailRow.hidden = !detailRow.hidden;
+        updateMarketDetailToggle(detail, row.children[1].firstChild.textContent, !detailRow.hidden);
+      });
+      row.children[7].append(detail);
+    }
+    for (const [cell, value] of [[0, index + 1],
+      [3, item.analysis_date || "--"], [5, item.reason], [6, item.risk]]) {
+      const text = String(value ?? "--");
+      if (row.children[cell].textContent !== text) row.children[cell].textContent = text;
+    }
+    const [name, code, industry] = row.children[1].children;
+    const [price, quoteSource] = row.children[2].children;
+    price.textContent = formatOptionalNumber(item.price);
+    quoteSource.textContent = item.quote_source || "公开完整日线";
+    const [score, action] = row.children[4].children;
+    score.textContent = item.score;
+    action.textContent = actionText[item.action];
+    action.dataset.action = item.action;
+    row.children[2].title = item.quote_source || "公开完整日线";
+    name.textContent = item.name;
+    code.textContent = Number.isInteger(item.universe_rank) && item.universe_rank > 0
+      ? `${item.symbol} · 原${definition.rank} #${item.universe_rank}` : item.symbol;
+    industry.textContent = industryText(item);
+    industry.title = industrySource(item);
+    const detail = row.children[7].firstChild;
+    updateMarketDetailToggle(detail, item.name, !detailRow.hidden);
+    renderMarketDetails(detailRow, item);
+    row.classList.toggle("just-analyzed", Boolean(snapshot.last_completed?.endsWith(item.symbol)));
+    const position = index * 2;
+    if (tbody.children[position] !== row) tbody.insertBefore(row, tbody.children[position] || null);
+    if (row.nextElementSibling !== detailRow) row.after(detailRow);
   });
+  if (focusedDetail?.isConnected && document.activeElement !== focusedDetail) focusedDetail.focus({ preventScroll: true });
   const emptyNode = document.querySelector("#scan-empty");
   emptyNode.textContent = scanEmptyText(snapshot);
   emptyNode.classList.toggle("hidden", results.length !== 0);
   if (snapshot.last_started_at) updateGlobalTime(snapshot.last_started_at);
+  if (!snapshot.running && ["finished", "stopped", "error", "data_unavailable"].includes(snapshot.status)) stopMarketUpdates();
+  return true;
+}
+
+function updateMarketDetailToggle(button, name, expanded) {
+  button.setAttribute("aria-expanded", String(expanded));
+  button.title = `${expanded ? "收起" : "展开"} ${name} 详情`;
+  button.setAttribute("aria-label", button.title);
+}
+
+function renderMarketDetails(row, item) {
+  const sections = [
+    ["分析理由", item.reasons?.length ? item.reasons : [item.reason]],
+    ["完整风险", item.risks?.length ? item.risks : [item.risk]],
+    ["量价证据", item.evidence || []],
+    ["后续观察", item.observations || []],
+    ["行情来源", [item.quote_source || "公开完整日线", `分析日期：${item.analysis_date || "--"}`]],
+  ];
+  const signature = JSON.stringify(sections);
+  if (row.dataset.content === signature) return;
+  row.dataset.content = signature;
+  const content = document.createElement("div");
+  content.className = "scan-detail-content";
+  sections.forEach(([title, items]) => {
+    if (!items.length) return;
+    const section = document.createElement("section");
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    const list = document.createElement("ul");
+    items.forEach(text => {
+      const li = document.createElement("li");
+      li.textContent = text || "--";
+      list.append(li);
+    });
+    section.append(heading, list);
+    content.append(section);
+  });
+  row.firstChild.replaceChildren(content);
 }
 
 function statusText(snapshot) {
-  return snapshot.status_message || snapshot.status;
+  return snapshot.status_message || ({
+    idle: "待启动", loading_universe: "正在读取所选股票池", switching: "正在切换股票池", scanning: "正在筛选",
+    finished: "本轮筛选完成", stopping: "停止中", stopped: "已停止", error: "筛选失败",
+    data_unavailable: `在线行情源暂不可用，${snapshot.deferred_count || 0} 只待重试`,
+  })[snapshot.status] || "状态未知";
 }
 
 function scanEmptyText(snapshot) {
-  if ((snapshot.failed_count || 0) > 0) {
-    return "暂时没有可展示股票，已有股票抓取失败或数据不足，请查看运行状态。";
+  if (snapshot.status === "idle") return "尚未开始筛选。";
+  if (snapshot.status === "data_unavailable") return `在线行情源暂不可用，${snapshot.deferred_count || 0} 只待重试；暂无可用缓存，尚未形成有效分析。`;
+  if (snapshot.status === "stopped") return "筛选已停止，当前没有有效分析结果。";
+  if (snapshot.status === "error") return snapshot.fetched_count
+    ? "行情获取失败，本轮未形成有效分析结果。"
+    : "所选股票池读取失败，本轮未开始分析；不会回退其他股票池或全市场。";
+  if (snapshot.status === "switching") return "正在读取新股票池。";
+  if (snapshot.status === "finished" && snapshot.fetched_count === 0) return "当日股票池为空，暂无可分析股票，不补入其他股票。";
+  if (snapshot.status === "finished" && snapshot.total_count === 0) return "池内股票均被板块规则排除，暂无可分析股票。";
+  if (snapshot.status === "finished" && snapshot.failed_count > 0 && snapshot.failed_count === snapshot.scanned_count) {
+    return "行情全部获取失败或数据不足，本轮未形成有效分析，请稍后重试。";
   }
-  if ((snapshot.skipped_count || 0) > 0) {
-    return "暂时没有可展示股票，当前批次可能多为已按规则跳过的市场代码。";
+  if (snapshot.status === "finished") return snapshot.failed_count > 0
+    ? "本轮暂无有效分析结果，部分行情获取失败，未完成完整覆盖。"
+    : "本轮暂无有效分析结果。";
+  if ((snapshot.failed_count || 0) > 0) {
+    return `已处理 ${snapshot.scanned_count || 0} 只，${snapshot.failed_count} 只行情获取失败或数据不足，尚无有效分析结果。`;
   }
   return "正在等待第一只股票完成分析。";
 }
@@ -1557,7 +2187,7 @@ function renderMl(prediction) {
   const rows = [
     ["算法", prediction.algorithm_name],
     ["预测周期", prediction.horizon_days > 1 ? `未来 ${prediction.horizon_days} 个交易日` : "下一交易日"],
-    ["历史达标占比", formatPercent(prediction.buy_probability)],
+    ["模型估计达标概率", formatPercent(prediction.buy_probability)],
     ["训练样本数", String(prediction.sample_count)],
   ];
   if (prediction.neighbor_count > 0) {

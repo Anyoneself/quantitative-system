@@ -19,8 +19,11 @@ from api.portfolio import (
 )
 from api.research import build_backtest_response, build_evaluation_response
 from api.experiments import build_experiment_response, list_experiments, load_experiment
+from api.paper import build_paper_response
+from research.paper import list_sessions, get_session_view
 from analysis.ml_model import ALGORITHMS
 from analysis.market_scanner import MARKET_SCANNER
+from data.industry import INDUSTRIES
 from analysis.scanner import parse_symbols, scan_top_stocks
 from analysis.service import analyze_stock_sell, build_advice
 from data.errors import DataRefreshError
@@ -60,7 +63,7 @@ def _create_server(host: str, port: int) -> ThreadingHTTPServer:
     for candidate_port in candidate_ports:
         try:
             server = ThreadingHTTPServer((host, candidate_port), QuantWebHandler)
-            server.desktop_bridge = TonghuashunBridge()
+            server.desktop_bridge = TonghuashunBridge(automation_path=Path("data/app/live_automation.json"))
             return server
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
@@ -98,6 +101,9 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
+        if path == "/api/paper" or path.startswith("/api/paper/"):
+            self._handle_paper(path, mutation=True)
+            return
         if path.startswith("/api/client/"):
             self._handle_client_bridge(path.removeprefix("/api/client/"))
             return
@@ -141,6 +147,9 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
         path = parsed.path
+        if path == "/api/paper" or path.startswith("/api/paper/"):
+            self._handle_paper(path)
+            return
         if path == "/api/client":
             self._handle_client_bridge()
             return
@@ -161,14 +170,62 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             self._handle_portfolio_detail(portfolio_route[0])
             return
         if path == "/api/market-scan/status":
-            self._send_json({"ok": True, "snapshot": asdict(MARKET_SCANNER.snapshot())})
+            self._send_json({"ok": True, "snapshot": asdict(self._market_scan_update(timeout=25))})
             return
         if path == "/api/market-scan/stream":
             self._handle_market_scan_stream()
             return
         super().do_GET()
 
+    def _handle_paper(self, path: str, mutation: bool = False) -> None:
+        try:
+            if len(self.headers.get_all("Host", [])) != 1:
+                raise BridgeError("LOCAL_ONLY", "本机请求 Host 无效。")
+            validate_local_request(
+                bind_host=self.server.server_address[0], peer_host=self.client_address[0],
+                port=self.server.server_address[1], headers=self.headers,
+                mutation=mutation, token=self.server.desktop_bridge.token,
+            )
+            parts = path.split("/")[3:]
+            if not mutation:
+                if not parts:
+                    self._send_json({"ok": True, "sessions": list_sessions(),
+                                     "request_token": self.server.desktop_bridge.token})
+                elif len(parts) == 1:
+                    self._send_json({"ok": True, "session": get_session_view(parts[0])})
+                else:
+                    self.send_error(404)
+                return
+            self.connection.settimeout(10)
+            lengths = self.headers.get_all("Content-Length", [])
+            if (len(lengths) != 1 or not lengths[0].isdigit()
+                    or not 0 < int(lengths[0]) <= 1_000_000 or self.headers.get("Transfer-Encoding")):
+                self.close_connection = True
+                raise ValueError("模拟请求体无效。")
+            payload = self._read_json()
+            if not parts:
+                response = build_paper_response(payload)
+            elif len(parts) == 2:
+                response = build_paper_response(payload, parts[0], parts[1])
+            else:
+                raise ValueError("模拟路径无效。")
+            self._send_json(response, status=201 if not parts else 200)
+        except BridgeError as exc:
+            self.close_connection = True
+            self._send_json({"ok": False, "error": str(exc)}, status=403)
+        except LookupError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=404)
+        except DataRefreshError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=502)
+        except (ValueError, TimeoutError) as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=422)
+        except RuntimeError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=409)
+        except OSError:
+            self._send_json({"ok": False, "error": "模拟账本读取或存储失败。"}, status=503)
+
     def _handle_client_bridge(self, action: str | None = None) -> None:
+        from desktop.trading import TradeInputError
         bridge = self.server.desktop_bridge
         try:
             if len(self.headers.get_all("Host", [])) != 1:
@@ -186,21 +243,35 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             if action is not None:
                 self.connection.settimeout(5)
                 lengths = self.headers.get_all("Content-Length", [])
+                body_limit = 8192 if action == "automation-save" else 4096
                 if (len(lengths) != 1 or not lengths[0].isdigit()
-                        or not 0 < int(lengths[0]) <= 4096 or self.headers.get("Transfer-Encoding")):
+                        or not 0 < int(lengths[0]) <= body_limit or self.headers.get("Transfer-Encoding")):
                     raise ValueError("本机操作请求体无效。")
                 payload = self._read_json()
+                if action == "prepare-trade":
+                    self._send_json({"ok": True, **bridge.prepare_trade(payload)})
+                    return
+                if action == "automation-save":
+                    self._send_json({"ok": True, "connection": bridge.configure_automation(payload)})
+                    return
+                if action == "automation-start":
+                    bridge.start_automation(payload)
                 if payload:
                     raise ValueError("本机操作不接受登录凭据、URL 或其他参数。")
                 state = bridge.perform(action)
             else:
                 state = bridge.status()
+            if action in (None, "sync"):
+                INDUSTRIES.refresh(MARKET_SCANNER.refresh_industries)
             self._send_json({"ok": True, "connection": state})
         except BridgeError as exc:
             response = {"ok": False, "error": str(exc), "code": exc.code}
             if exc.code != "BUSY":
                 response["connection"] = bridge.status()
-            self._send_json(response, status=409 if exc.code in ("BUSY", "ACTION_UNAVAILABLE") else 422)
+            self._send_json(response, status=409 if exc.code in (
+                "BUSY", "ACTION_UNAVAILABLE", "LIVE_TRADING_UNAVAILABLE", "CONFIG_CONFLICT") else 422)
+        except TradeInputError as exc:
+            self._send_json({"ok": False, "error": str(exc), "connection": bridge.status()}, status=400)
         except (ValueError, TimeoutError):
             self.close_connection = True
             self._send_json({"ok": False, "error": "本机操作请求无效。"}, status=400)
@@ -232,6 +303,8 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             )
         except DataRefreshError as exc:
             self._send_json({"ok": False, "error": str(exc)}, status=502)
+        except RuntimeError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=503)
         except json.JSONDecodeError:
             self._send_json({"ok": False, "error": "请求不是有效 JSON。"}, status=400)
 
@@ -304,10 +377,13 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
             if algorithm not in ALGORITHMS:
                 self._send_json({"ok": False, "error": "机器学习算法不支持。"}, status=400)
                 return
-            MARKET_SCANNER.start(algorithm, top_n)
+            MARKET_SCANNER.start(algorithm, top_n, pool=payload.get("pool", "gainers"))
+            INDUSTRIES.refresh(MARKET_SCANNER.refresh_industries)
             self._send_json({"ok": True, "snapshot": asdict(MARKET_SCANNER.snapshot())})
         except json.JSONDecodeError:
             self._send_json({"ok": False, "error": "请求不是有效 JSON。"}, status=400)
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
 
     def _handle_health(self) -> None:
         try:
@@ -460,6 +536,15 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
         except OSError:
             self._send_json({"ok": False, "error": "实验文件读取或留档失败。"}, status=503)
 
+    def _market_scan_update(self, timeout: float = 0):
+        snapshot = MARKET_SCANNER.snapshot()
+        query = parse_qs(urlsplit(self.path).query)
+        try:
+            after = max(0, min(snapshot.version, int(query["after"][0])))
+        except (KeyError, ValueError, IndexError):
+            return snapshot
+        return MARKET_SCANNER.wait_for_update(after, timeout)
+
     def _handle_market_scan_stream(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -468,7 +553,7 @@ class QuantWebHandler(SimpleHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
 
-        snapshot = MARKET_SCANNER.snapshot()
+        snapshot = self._market_scan_update()
         version = snapshot.version
         if not self._send_event(snapshot):
             return
@@ -610,7 +695,7 @@ def _beginner_payload(advice) -> dict:
     return {
         "headline": action_map.get(advice.action, advice.action),
         "plain_language": [
-            "机器学习概率不是收益承诺，更准确地说，是历史相似量价样本里的上涨占比。",
+            "模型估计基于历史量价及扣费后标签，未经样本外验证，不代表实际盈利概率。",
             "判断是否可信时，优先同时看趋势、成交量、20 日位置和风险提示，不能只看概率。",
             "如果概率低但趋势理由偏强，说明技术面有亮点，但历史相似样本并不支持立刻买。",
             "新手更适合把结论当成筛选器，再结合仓位、止损和市场环境做决定。",

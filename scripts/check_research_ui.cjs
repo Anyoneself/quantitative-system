@@ -25,11 +25,14 @@ async function main() {
       await page.locator("#experiment-submit").click();
       await page.locator("#experiment-result").waitFor({ state: "visible", timeout: 60000 });
       assert.match(await page.locator("#experiment-mode").innerText(), /合成演示.*实盘禁用/);
-      assert.equal(await page.locator("#experiment-checks tr").count(), 11);
+      assert.equal(await page.locator("#experiment-checks tr").count(), 17);
+      assert.match(await page.locator("#experiment-reconciliation").innerText(), /独立对账平衡/);
+      assert.match(await page.locator("#experiment-data-checks").innerText(), /公司行动/);
       assert.ok(await page.locator("#experiment-orders tr").count() > 0);
-      assert.equal(await page.locator("#experiment-page-count").innerText(), "1 / 3");
+      assert.match(await page.locator("#experiment-page-count").innerText(), /^1 \/ \d+$/);
       await page.locator("#experiment-next").click();
-      assert.equal(await page.locator("#experiment-page-count").innerText(), "2 / 3");
+      assert.match(await page.locator("#experiment-page-count").innerText(), /^2 \/ \d+$/);
+      assert.notEqual(await page.locator("#holdout-return").innerText(), "--");
       await page.locator("#experiment-prev").click();
       await page.evaluate(() => window.scrollTo(0, 0));
       const geometry = await page.evaluate(() => {

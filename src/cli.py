@@ -16,8 +16,15 @@ from data.errors import DataRefreshError
 from data.source import fetch_bars
 from output.formatter import format_advice, format_sell_advice
 from research.config import parse_config
+from research.audit import audit_dataset
 from research.dataset import build_demo_dataset, load_dataset
 from research.experiment import run_experiment, save_experiment
+from research.capture import capture_dataset, capture_historical_dataset
+from research.dataset import canonical_json
+from research.paper import (
+    advance_from_public, advance_session, create_session, load_session, pause_session,
+    resume_session, recover_session, get_session_view, watch_session,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +45,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_evaluate(args)
     if args.command == "research":
         return _run_research(args)
+    if args.command == "research-fetch":
+        return _run_capture(args)
+    if args.command == "research-audit":
+        return _run_audit(args)
+    if args.command == "paper":
+        return _run_paper(args)
 
     parser.print_help()
     return 1
@@ -105,7 +118,91 @@ def _build_parser() -> argparse.ArgumentParser:
     research_parser.add_argument("--config", help="研究配置 JSON，默认使用保守仓位和风险阈值")
     research_parser.add_argument("--output", default="data/experiments", help="实验留档根目录")
     research_parser.add_argument("--format", choices=["text", "json"], default="text")
+    capture_parser = subparsers.add_parser("research-fetch", help="采集未复权公开行情，今日证券池不回填历史")
+    capture_source = capture_parser.add_mutually_exclusive_group(required=True)
+    capture_source.add_argument("--symbols")
+    capture_source.add_argument("--universe", help="用户提供的历史证券池清单 JSON，需 source 与 universe")
+    capture_parser.add_argument("--benchmark", default="000300")
+    capture_parser.add_argument("--days", type=int, default=1200)
+    capture_parser.add_argument("--output", required=True)
+    audit_parser = subparsers.add_parser("research-audit", help="独立检查快照日历、覆盖与异常跳价")
+    audit_parser.add_argument("--dataset", required=True)
+    paper_parser = subparsers.add_parser("paper", help="冻结参数的持久化前向模拟，不连接真实交易")
+    paper_commands = paper_parser.add_subparsers(dest="paper_action", required=True)
+    create_parser = paper_commands.add_parser("create")
+    create_source = create_parser.add_mutually_exclusive_group(required=True)
+    create_source.add_argument("--symbols")
+    create_source.add_argument("--dataset")
+    create_parser.add_argument("--benchmark", default="000300")
+    create_parser.add_argument("--config")
+    for action in ("advance", "status", "pause", "resume", "recover", "watch"):
+        action_parser = paper_commands.add_parser(action)
+        action_parser.add_argument("session_id")
+        if action not in {"status", "watch"}:
+            action_parser.add_argument("--expected-revision", type=int)
+        if action == "advance":
+            action_parser.add_argument("--dataset")
+        if action == "watch":
+            action_parser.add_argument("--interval", type=int, default=1800)
+            action_parser.add_argument("--once", action="store_true")
     return parser
+
+
+def _run_audit(args: argparse.Namespace) -> int:
+    try:
+        report = audit_dataset(load_dataset(args.dataset))
+        print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
+        return 1 if report["status"] == "BLOCKED" else 0
+    except (ValueError, OSError) as exc:
+        print(f"数据体检失败：{exc}", file=sys.stderr)
+        return 1
+
+
+def _run_capture(args: argparse.Namespace) -> int:
+    try:
+        dataset = (capture_historical_dataset(json.loads(Path(args.universe).read_text(encoding="utf-8")),
+                                              args.benchmark, days=args.days) if args.universe else
+                   capture_dataset(parse_symbols(args.symbols), args.benchmark, days=args.days))
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # 禁止覆盖冻结快照，避免用户不知情地失去原始研究输入。
+        with target.open("x", encoding="utf-8") as stream:
+            stream.write(canonical_json(dataset.to_dict()) + "\n")
+        print(json.dumps({"path": str(target.resolve()), "data_hash": dataset.fingerprint(),
+                          "known_at": dataset.universe[0].known_at.isoformat(),
+                          "last_date": dataset.bars[dataset.benchmark][-1].trade_date.isoformat(),
+                          "source": dataset.source}, ensure_ascii=False))
+        return 0
+    except (ValueError, OSError, DataRefreshError) as exc:
+        print(f"快照采集失败：{exc}", file=sys.stderr)
+        return 1
+
+
+def _run_paper(args: argparse.Namespace) -> int:
+    try:
+        if args.paper_action == "watch":
+            watch_session(args.session_id, interval_seconds=args.interval, once=args.once)
+            return 0
+        if args.paper_action == "create":
+            strategy, simulation, _ = parse_config(json.loads(Path(args.config).read_text()) if args.config else {})
+            dataset = (load_dataset(args.dataset) if args.dataset else
+                       capture_dataset(parse_symbols(args.symbols), args.benchmark))
+            state = create_session(dataset, strategy, simulation)
+        elif args.paper_action == "advance":
+            state = (advance_session(args.session_id, load_dataset(args.dataset), expected_revision=args.expected_revision)
+                     if args.dataset else advance_from_public(args.session_id, expected_revision=args.expected_revision))
+        elif args.paper_action in {"pause", "resume", "recover"}:
+            state = {"pause": pause_session, "resume": resume_session, "recover": recover_session}[args.paper_action](
+                args.session_id, expected_revision=args.expected_revision)
+        else:
+            state = load_session(args.session_id)
+        print(json.dumps(get_session_view(state["session_id"]), ensure_ascii=False, indent=2, allow_nan=False))
+        return 0
+    except (ValueError, OSError, LookupError, RuntimeError) as exc:
+        print(f"前向模拟失败：{exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 0
 
 
 def _run_advise(args: argparse.Namespace) -> int:

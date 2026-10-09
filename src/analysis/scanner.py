@@ -19,6 +19,14 @@ class ScanResult:
     probability: float
     reason: str
     risk: str
+    analysis_date: str = ""
+    price: float | None = None
+    cached: bool = False
+    quote_source: str = ""
+    reasons: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    risks: tuple[str, ...] = ()
+    observations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

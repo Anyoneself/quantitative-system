@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from math import isfinite, sin
 from datetime import date, timedelta
 from unittest.mock import patch
 
 from analysis import evaluation
 from analysis.evaluation import evaluate_walk_forward
 from analysis.ml_model import (
+    ALGORITHMS,
     DEFAULT_COMMISSION_RATE,
     DEFAULT_SLIPPAGE_RATE,
     DEFAULT_STAMP_DUTY_RATE,
@@ -19,6 +21,7 @@ from analysis.ml_model import (
     calculate_forward_outcome,
     predict_next_day_buy_probability,
     prediction_horizon_days,
+    prediction_target_return,
 )
 from data.models import PriceVolumeBar
 
@@ -139,6 +142,87 @@ class ModelOutcomeTest(unittest.TestCase):
         self.assertEqual(prediction_horizon_days("knn"), 2)
         with self.assertRaisesRegex(ValueError, "T\\+1"):
             calculate_forward_outcome(_build_bars(5), 0, 1, 0)
+
+
+class ModelChoiceScenarios(unittest.TestCase):
+    algorithms = ("random_forest", "extra_trees", "gradient_boosting", "gaussian_nb")
+
+    def test_new_algorithms_are_real_deterministic_classifiers_with_shared_labels(self):
+        """Given 含涨跌两类历史样本 When 分别选择新增算法 Then 真正执行所选模型且结果可复现、标签口径相同"""
+        bars = [_bar(i, price * .998, price * 1.01, price * .99, price, 1000 + i % 7 * 40)
+                for i in range(180) for price in [10 + sin(i / 5) * 1.2 + i * .005]]
+        for algorithm in self.algorithms:
+            with self.subTest(algorithm=algorithm):
+                self.assertIn(algorithm, ALGORITHMS)
+                self.assertEqual(prediction_horizon_days(algorithm), 5)
+                self.assertEqual(prediction_target_return(algorithm), .012)
+                prediction = predict_next_day_buy_probability(bars, algorithm)
+                self.assertIsNotNone(prediction)
+                self.assertEqual(prediction.algorithm, algorithm)
+                self.assertEqual(prediction.algorithm_name, ALGORITHMS[algorithm])
+                self.assertEqual(prediction.horizon_days, 5)
+                self.assertTrue(isfinite(prediction.buy_probability))
+                self.assertTrue(0 <= prediction.buy_probability <= 1)
+                self.assertEqual(prediction.neighbor_count, 0)
+                self.assertEqual(prediction.positive_count, 0)
+                self.assertEqual(prediction, predict_next_day_buy_probability(bars, algorithm))
+
+    def test_new_models_do_not_invent_probabilities_for_single_or_rare_classes(self):
+        """Given 标签只有一类或少数类不足五例 When 训练新模型 Then 返回样本不足而非虚构高胜率或替换算法"""
+        for algorithm in self.algorithms:
+            for labels in ([0] * 60, [1] * 60, [0] * 56 + [1] * 4):
+                with self.subTest(algorithm=algorithm, positives=sum(labels)), \
+                     patch("analysis.ml_model._build_samples", return_value=[
+                         ([float(i), 1.0], label, i + 20) for i, label in enumerate(labels)
+                     ]):
+                    self.assertIsNone(predict_next_day_buy_probability(_build_bars(100), algorithm))
+
+    def test_unknown_algorithm_is_rejected_instead_of_silently_using_knn(self):
+        """Given 未知算法代码 When 请求预测 Then 明确拒绝而不静默执行KNN"""
+        with self.assertRaisesRegex(ValueError, "算法"):
+            predict_next_day_buy_probability(_build_bars(100), "unknown_model")
+
+    def test_preprocessing_fits_only_completed_training_samples(self):
+        """Given 当前预测特征极端且未出现在训练集 When 朴素贝叶斯标准化 Then 只用已完成标签的训练样本拟合"""
+        from analysis.ml_model import _predict_with_sklearn
+        from sklearn.preprocessing import StandardScaler
+        samples = [([float(i), 1.0], i % 2, i + 20) for i in range(40)]
+        observed = []
+        original = StandardScaler.fit
+
+        def record_fit(scaler, values, *args, **kwargs):
+            observed.append([list(row) for row in values])
+            return original(scaler, values, *args, **kwargs)
+
+        with patch.object(StandardScaler, "fit", record_fit):
+            _predict_with_sklearn(samples, [9999.0, 1.0], "gaussian_nb", 5)
+        self.assertEqual(observed, [[features for features, _, _ in samples]])
+
+    def test_latest_training_label_ends_before_or_at_analysis_time(self):
+        """Given 截至某日的行情 When 新模型构造训练集 Then 所有标签已在该时点完成，不使用未来行情"""
+        bars = _build_bars(100)
+        for algorithm in self.algorithms:
+            with self.subTest(algorithm=algorithm), \
+                 patch("analysis.ml_model._predict_with_sklearn", return_value=None) as predict:
+                predict_next_day_buy_probability(bars, algorithm)
+                samples, _, selected, horizon = predict.call_args.args
+                self.assertEqual(selected, algorithm)
+                self.assertTrue(all(index + horizon < len(bars) for _, _, index in samples))
+                self.assertEqual(samples, _build_samples(bars, 5, .012))
+
+    def test_new_models_work_with_existing_walk_forward_research_gate(self):
+        """Given 新模型的时间顺序回放 When 用既有样本外引擎评估 Then 可产出指标但仍仅限研究"""
+        bars = [_bar(i, price * .998, price * 1.01, price * .99, price, 1000 + i % 7 * 40)
+                for i in range(120) for price in [10 + sin(i / 5) * 1.2 + i * .005]]
+        for algorithm in self.algorithms:
+            with self.subTest(algorithm=algorithm):
+                result = evaluate_walk_forward(bars, algorithm, thresholds=(.2,),
+                    min_validation_samples=2, min_test_samples=2, min_validation_trades=1)
+                self.assertEqual(result.algorithm, algorithm)
+                self.assertEqual(result.horizon_days, 5)
+                self.assertLess(result.validation_end_date, result.test_start_date)
+                self.assertTrue(isfinite(result.test.brier_score))
+                self.assertIn(result.release_status, {"RESEARCH_ONLY", "NOT_READY", "FAILED_OOS"})
 
 
 class WalkForwardEvaluationTest(unittest.TestCase):

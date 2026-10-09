@@ -360,7 +360,7 @@ class AdvisorTest(unittest.TestCase):
         self.assertEqual(results[0].amount_ratio_20d, 0.5)
         self.assertIn("底背离低成交额候选", format_entry_signal_report(results))
 
-    def test_market_scanner_keeps_top_10_without_min_score(self) -> None:
+    def test_market_scanner_ranks_avoid_signals_without_relabeling_them_as_buy(self) -> None:
         stocks = [
             StockInfo(symbol="300001", name="创业板1"),
             StockInfo(symbol="301001", name="创业板2"),
@@ -384,10 +384,10 @@ class AdvisorTest(unittest.TestCase):
         )
 
         scanner = MarketScanner()
-        with patch("analysis.market_scanner.iter_a_stock_symbols", return_value=iter(stocks)):
+        with patch("analysis.market_scanner.fetch_public_a_stock_gainers", return_value=stocks):
             with patch("analysis.market_scanner._analyze_market_stock", side_effect=fake_market_analyzer):
-                scanner._run_id = 1
-                scanner._run_once(1, threading.Event(), "knn", 10)
+                scanner.start("knn", 10)
+                scanner._thread.join(3)
 
         snapshot = scanner.snapshot()
 
@@ -399,31 +399,32 @@ class AdvisorTest(unittest.TestCase):
         self.assertNotIn("301001", analyzed_symbols)
         self.assertNotIn("688001", analyzed_symbols)
         self.assertNotIn("689001", analyzed_symbols)
-        self.assertEqual(snapshot.status_message, "本轮全量完成")
+        self.assertEqual(snapshot.status_message, "本轮筛选完成")
         self.assertEqual(len(snapshot.top_results), 10)
-        self.assertEqual(snapshot.top_results[0]["score"], 11)
-        self.assertEqual(snapshot.top_results[-1]["score"], 2)
+        self.assertEqual([item["score"] for item in snapshot.top_results], list(range(11, 1, -1)))
+        self.assertTrue(all(item["action"] == "AVOID" for item in snapshot.top_results))
+        self.assertEqual(snapshot.failed_count, 0)
 
     def test_market_scanner_keeps_error_when_universe_empty(self) -> None:
         scanner = MarketScanner()
-        with patch("analysis.market_scanner.iter_a_stock_symbols", side_effect=DataRefreshError("列表为空")):
-            scanner._run_id = 1
-            result = scanner._run_once(1, threading.Event(), "knn", 10)
+        with patch("analysis.market_scanner.fetch_public_a_stock_gainers", side_effect=DataRefreshError("列表为空")):
+            scanner.start("knn", 10)
+            scanner._thread.join(3)
 
         snapshot = scanner.snapshot()
 
-        self.assertFalse(result)
+        self.assertFalse(snapshot.running)
         self.assertEqual(snapshot.status, "error")
         self.assertIn("列表为空", snapshot.error)
 
-    def test_market_scanner_restart_creates_new_run(self) -> None:
+    def test_market_scanner_repeated_start_keeps_the_running_scan(self) -> None:
         scanner = MarketScanner()
         with patch.object(scanner, "_run_loop"):
             scanner.start("knn", 10)
             first_run_id = scanner._run_id
             scanner.start("weighted_knn", 10)
 
-        self.assertGreater(scanner._run_id, first_run_id)
+        self.assertEqual(scanner._run_id, first_run_id)
 
     def test_market_scanner_skips_timed_out_future(self) -> None:
         scanner = MarketScanner()

@@ -18,7 +18,8 @@ COPY --chown=quant:quant config ./config
 COPY --chown=quant:quant scripts ./scripts
 COPY --chown=quant:quant src ./src
 
-RUN chmod +x /app/scripts/quant /app/scripts/docker-entrypoint.sh
+RUN pip install --no-cache-dir . \
+    && chmod +x /app/scripts/quant /app/scripts/docker-entrypoint.sh
 
 USER quant
 

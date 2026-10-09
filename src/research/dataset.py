@@ -28,6 +28,7 @@ class ResearchDataset:
     source: str
     synthetic: bool
     adjustment: str
+    calendar: dict | None = None
 
     def members_on(self, as_of: date) -> tuple[str, ...]:
         # 证券池必须来自当时已知的快照，不能用今天仍上市的股票倒推历史全集。
@@ -35,7 +36,7 @@ class ResearchDataset:
         return eligible[-1].symbols if eligible else ()
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "schema_version": 1,
             "source": self.source,
             "synthetic": self.synthetic,
@@ -55,6 +56,9 @@ class ResearchDataset:
                 for symbol, bars in sorted(self.bars.items())
             },
         }
+        if self.calendar is not None:
+            payload["calendar"] = self.calendar
+        return payload
 
     def fingerprint(self) -> str:
         return sha256(canonical_json(self.to_dict()).encode()).hexdigest()
@@ -74,6 +78,9 @@ def load_dataset(path: str | Path) -> ResearchDataset:
 def parse_dataset(payload: dict) -> ResearchDataset:
     if not isinstance(payload, dict) or type(payload.get("schema_version")) is not int or payload.get("schema_version") != 1:
         raise ValueError("研究快照 schema_version 必须为 1。")
+    if set(payload) - {"schema_version", "source", "synthetic", "adjustment", "volume_unit",
+                       "benchmark", "universe", "bars", "calendar"}:
+        raise ValueError("研究快照包含未知字段。")
     if not isinstance(payload.get("synthetic"), bool):
         raise ValueError("快照必须明确 synthetic 布尔标记。")
     source = payload.get("source")
@@ -127,7 +134,21 @@ def parse_dataset(payload: dict) -> ResearchDataset:
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     if any(bar.trade_date == now.date() and now.hour < 15 for rows in bars.values() for bar in rows):
         raise ValueError("快照包含尚未收盘的当日日线。")
-    return ResearchDataset(bars, tuple(universe), benchmark, source.strip(), payload["synthetic"], payload["adjustment"])
+    declared_calendar = payload.get("calendar")
+    if declared_calendar is not None:
+        if (not isinstance(declared_calendar, dict) or set(declared_calendar) != {"source", "sessions"}
+                or not isinstance(declared_calendar["source"], str)
+                or not 1 <= len(declared_calendar["source"].strip()) <= 1000
+                or not isinstance(declared_calendar["sessions"], list)
+                or not 2 <= len(declared_calendar["sessions"]) <= 4000):
+            raise ValueError("日历必须提供明确 source 和有序 sessions 列表。")
+        sessions = [_date(value, allow_future=True) for value in declared_calendar["sessions"]]
+        if any(left >= right for left, right in zip(sessions, sessions[1:])):
+            raise ValueError("日历日期必须严格递增且不重复。")
+        declared_calendar = {"source": declared_calendar["source"].strip(),
+                             "sessions": [day.isoformat() for day in sessions]}
+    return ResearchDataset(bars, tuple(universe), benchmark, source.strip(), payload["synthetic"],
+                           payload["adjustment"], declared_calendar)
 
 
 def build_demo_dataset() -> ResearchDataset:
@@ -164,11 +185,11 @@ def build_demo_dataset() -> ResearchDataset:
     )
 
 
-def _date(value: object) -> date:
+def _date(value: object, *, allow_future: bool = False) -> date:
     if not isinstance(value, str):
         raise ValueError("日期必须为 YYYY-MM-DD 字符串。")
     parsed = date.fromisoformat(value)
-    if parsed.isoformat() != value or parsed > datetime.now(ZoneInfo("Asia/Shanghai")).date():
+    if parsed.isoformat() != value or (not allow_future and parsed > datetime.now(ZoneInfo("Asia/Shanghai")).date()):
         raise ValueError("日期格式错误或晚于当前日期。")
     return parsed
 

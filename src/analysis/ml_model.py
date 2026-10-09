@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import exp, sqrt
+from math import exp, isfinite, sqrt
 from typing import TypeAlias
 
 from data.market_rules import price_limit_rate, price_limit_value
@@ -37,12 +37,20 @@ class ForwardOutcome:
     label: int
 
 
+SKLEARN_ALGORITHMS = {
+    "random_forest": "随机森林（5日）",
+    "extra_trees": "极端随机树（5日）",
+    "gradient_boosting": "梯度提升树（5日）",
+    "gaussian_nb": "高斯朴素贝叶斯（5日）",
+}
+
 ALGORITHMS = {
     "knn": "KNN 相似样本",
     "weighted_knn": "加权 KNN 相似样本",
     "time_decay_knn": "时间衰减 KNN（5日）",
     "robust_ensemble": "稳健集成模型（5日）",
     "logistic_regression": "逻辑回归",
+    **SKLEARN_ALGORITHMS,
 }
 
 
@@ -50,6 +58,8 @@ def predict_next_day_buy_probability(
     bars: list[PriceVolumeBar],
     algorithm: str = "knn",
 ) -> MlPrediction | None:
+    if algorithm not in ALGORITHMS:
+        raise ValueError("机器学习算法不支持。")
     if len(bars) < 45:
         return None
 
@@ -61,6 +71,8 @@ def predict_next_day_buy_probability(
         return None
 
     predict_features = _build_features(bars, len(bars) - 1)
+    if algorithm in SKLEARN_ALGORITHMS:
+        return _predict_with_sklearn(samples, predict_features, algorithm, horizon_days)
     if algorithm == "logistic_regression":
         return _predict_with_logistic(samples, predict_features, horizon_days)
 
@@ -98,11 +110,44 @@ def predict_next_day_buy_probability(
 
 def prediction_horizon_days(algorithm: str) -> int:
     # A 股次日开盘买入后不能当天卖出，最短标签终点为信号后的第二个交易日。
-    return 5 if algorithm in {"robust_ensemble", "time_decay_knn"} else 2
+    return 5 if algorithm in {"robust_ensemble", "time_decay_knn", *SKLEARN_ALGORITHMS} else 2
 
 
 def prediction_target_return(algorithm: str) -> float:
-    return 0.012 if algorithm in {"robust_ensemble", "time_decay_knn"} else 0.0
+    return 0.012 if prediction_horizon_days(algorithm) == 5 else 0.0
+
+
+def _predict_with_sklearn(
+    samples: list[Sample], predict_features: list[float], algorithm: str, horizon_days: int,
+) -> MlPrediction | None:
+    labels = [label for _, label, _ in samples]
+    if min(labels.count(0), labels.count(1)) < 5:
+        return None
+    try:
+        from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
+        from sklearn.naive_bayes import GaussianNB
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+    except ImportError as exc:
+        raise RuntimeError("新增算法依赖 scikit-learn，请使用项目虚拟环境启动服务。") from exc
+
+    # Fixed seeds and bounded single-threaded models keep concurrent stock analysis reproducible.
+    estimators = {
+        "random_forest": RandomForestClassifier(n_estimators=64, max_depth=4, min_samples_leaf=5,
+                                                random_state=42, n_jobs=1),
+        "extra_trees": ExtraTreesClassifier(n_estimators=64, max_depth=4, min_samples_leaf=5,
+                                            random_state=42, n_jobs=1),
+        "gradient_boosting": GradientBoostingClassifier(n_estimators=60, max_depth=2,
+                                                        min_samples_leaf=5, learning_rate=.05, random_state=42),
+        "gaussian_nb": make_pipeline(StandardScaler(), GaussianNB(var_smoothing=1e-6)),
+    }
+    model = estimators[algorithm]
+    model.fit([features for features, _, _ in samples], labels)
+    probability = float(model.predict_proba([predict_features])[0][list(model.classes_).index(1)])
+    if not isfinite(probability) or not 0 <= probability <= 1:
+        return None
+    probability = _shrink_probability(probability, _base_rate(samples), len(samples), strength=110)
+    return MlPrediction(algorithm, ALGORITHMS[algorithm], probability, len(samples), 0, 0, horizon_days)
 
 
 def calculate_forward_outcome(

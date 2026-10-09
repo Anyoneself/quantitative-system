@@ -9,6 +9,7 @@ from research.config import SimulationConfig, StrategyConfig, validate_config
 from research.dataset import ResearchDataset
 from research.execution import simulate_fill
 from research.strategy import target_weights
+from research.audit import reconcile_result
 
 
 def simulate_portfolio(
@@ -26,8 +27,8 @@ def simulate_portfolio(
         validate_config(item, config)
     calendar = [bar.trade_date for bar in dataset.bars[dataset.benchmark]]
     dates = [day for day in calendar if (start is None or day >= start) and (end is None or day <= end)]
-    if len(dates) < 2 or dates[0] == calendar[0]:
-        raise ValueError("模拟区间至少需两日，且首日前必须存在历史行情。")
+    if not dates or dates[0] == calendar[0]:
+        raise ValueError("模拟区间至少需一日，且首日前必须存在历史行情。")
     indexed = {symbol: {bar.trade_date: bar for bar in rows} for symbol, rows in dataset.bars.items()}
     histories = {symbol: [bar for bar in rows if bar.trade_date < dates[0]] for symbol, rows in dataset.bars.items()}
     cash = round(config.initial_cash, 2)
@@ -121,7 +122,7 @@ def simulate_portfolio(
         "turnover": sum(order["price"] * order["filled_quantity"] for order in orders) / config.initial_cash,
         "halted": halted, "open_positions": len(positions),
     })
-    return {
+    result = {
         "summary": summary, "equity_curve": curve, "orders": orders,
         "risk_events": risk_events, "decisions": decisions,
         "terminal_positions": dict(sorted(positions.items())),
@@ -132,6 +133,8 @@ def simulate_portfolio(
             "回撤熔断后持续尝试退出；停牌、跌停或流动性不足可能导致实际回撤超过阈值。",
         ],
     }
+    result["reconciliation"] = reconcile_result(dataset, result, config)
+    return result
 
 
 def _execute_targets(
@@ -193,6 +196,7 @@ def _execute_targets(
                     if not positions[symbol]:
                         del positions[symbol], costs[symbol], acquired[symbol]
             orders.append({
+                "order_id": f"{day.isoformat()}:{symbol}:{side}",
                 "signal_date": signal_day.isoformat(), "trade_date": day.isoformat(),
                 "symbol": symbol, "side": side, "requested_quantity": abs(delta),
                 "filled_quantity": filled, "price": price, "fee": fee, "cash_after": cash,

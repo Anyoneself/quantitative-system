@@ -8,21 +8,24 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from desktop.tonghuashun import BridgeError, TonghuashunBridge, parse_snapshot, validate_local_request
+from desktop.tonghuashun import (
+    BridgeError, TonghuashunBridge, parse_snapshot, parse_watchlist, validate_local_request,
+)
 
 
 def node(role, value="", children=None):
     return {"role": role, "text": value, "children": children or []}
 
 
-def account_page(market="0.00", positions=None):
+def account_page(market="0.00", positions=None, *, fund_overrides=None):
     funds = [("总资产", str(10000 + float(market))), ("总市值", market),
              ("资金余额", "10000.00"), ("可用金额", "9000.00"), ("可取金额", "8000.00")]
     headers = ["证券代码", "证券名称", "实际数量", "可用余额", "市价", "成本价", "市值"]
     return node("AXWindow", children=[
         node("AXStaticText", "平安证券 ––"),
         node("AXTable", children=[
-            node("AXRow", children=[node("AXStaticText", label), node("AXStaticText", value)])
+            node("AXRow", children=[node("AXStaticText", label),
+                                   node("AXStaticText", (fund_overrides or {}).get(label, value))])
             for label, value in funds
         ]),
         node("AXTable", children=[
@@ -33,12 +36,32 @@ def account_page(market="0.00", positions=None):
     ])
 
 
+def watchlist_page(stocks=None, count=None, selected="自选股"):
+    stocks = [("000001", "测试证券"), ("688001", "测试科创")] if stocks is None else stocks
+    groups = ["自选股", "量化"]
+    return node("AXSheet", children=[
+        node("AXStaticText", "自选分组设置（共2组）："),
+        node("AXStaticText", f"所选分组成分股设置（共{len(stocks) if count is None else count}只）："),
+        node("AXTable", children=[
+            {**node("AXRow", children=[node("AXCell", children=[node("AXStaticText", name)])]),
+             "selected": name == selected} for name in groups
+        ]),
+        node("AXTable", children=[
+            node("AXRow", children=[node("AXCell", children=[
+                node("AXStaticText", symbol), node("AXStaticText", name),
+            ])]) for symbol, name in stocks
+        ]),
+    ])
+
+
 class FakeClient:
     def __init__(self):
         self.page = account_page()
         self.state = {"code": "READY_TO_READ", "installed": True, "running": True,
                       "accessibility": True, "version": "5.3.5", "runtime": "/test/python"}
         self.read_count = 0
+        self.watchlist_page = watchlist_page()
+        self.watchlist_read_count = 0
         self.launch_count = 0
 
     def inspect(self):
@@ -52,6 +75,12 @@ class FakeClient:
 
     def launch(self):
         self.launch_count += 1
+
+    def read_watchlist(self):
+        self.watchlist_read_count += 1
+        if isinstance(self.watchlist_page, Exception):
+            raise self.watchlist_page
+        return copy.deepcopy(self.watchlist_page)
 
     def request_permission(self):
         return False
@@ -76,6 +105,77 @@ class SnapshotScenarios(unittest.TestCase):
         self.assertEqual(result["positions"][0]["symbol"], "000001")
         self.assertEqual(result["positions"][0]["quantity"], 100)
         self.assertEqual(result["positions"][0]["market_value"], "1000.00")
+
+    def test_cash_balance_is_the_preferred_display_basis(self):
+        """Scenario: 优先核对资金余额
+        Given 总资产与市值加资金余额一致，可用金额可能也一致
+        When 解析客户端快照
+        Then 记录资金余额口径且仅声明显示值核对
+        """
+        for available in ["9000.00", "10000.00"]:
+            with self.subTest(available=available):
+                result = parse_snapshot(account_page(fund_overrides={"可用金额": available}))
+                self.assertEqual(result["funds_reconciliation"], {
+                    "scope": "client_display", "cash_basis": "cash_balance",
+                })
+
+    def test_available_cash_display_basis_preserves_all_original_amounts(self):
+        """Scenario: 资金余额与资产显示口径不同
+        Given 总资产仅与市值加可用金额一致且持仓市值完整
+        When 解析客户端快照
+        Then 接受快照并明确口径，不用可用金额覆盖资金余额
+        """
+        page = account_page("1000", [["000001", "测试证券", "100", "100", "10", "9", "1000"]],
+                            fund_overrides={"总资产": "9000", "可用金额": "8000", "可取金额": "7000"})
+        result = parse_snapshot(page)
+        self.assertEqual(result["funds"], {
+            "total_assets": "9000.00", "market_value": "1000.00", "cash_balance": "10000.00",
+            "available_cash": "8000.00", "withdrawable_cash": "7000.00",
+        })
+        self.assertEqual(result["funds_reconciliation"], {
+            "scope": "client_display", "cash_basis": "available_cash",
+        })
+        self.assertEqual(len(result["positions"]), 1)
+        self.assertFalse(result["account_id_verified"])
+
+    def test_both_display_bases_keep_the_five_cent_tolerance(self):
+        """Scenario: 不扩大资金校验容差
+        Given 分别采用资金余额或可用金额口径
+        When 合计误差为五分或六分
+        Then 五分通过且六分拒绝
+        """
+        for total, basis in [("10000.05", "cash_balance"), ("9000.05", "available_cash")]:
+            with self.subTest(total=total):
+                result = parse_snapshot(account_page(fund_overrides={"总资产": total}))
+                self.assertEqual(result["funds_reconciliation"]["cash_basis"], basis)
+        for total in ["10000.06", "9999.94", "9000.06", "8999.94"]:
+            with self.subTest(total=total), self.assertRaisesRegex(BridgeError, "资金合计"):
+                parse_snapshot(account_page(fund_overrides={"总资产": total}))
+
+    def test_neither_display_basis_or_invalid_cash_bounds_are_rejected(self):
+        """Scenario: 显示口径兼容不掩盖异常
+        Given 合计不匹配、只有可取金额匹配或可用/可取金额超过资金余额
+        When 解析客户端快照
+        Then 继续拒绝更新
+        """
+        for overrides in [
+            {"总资产": "9500"}, {"总资产": "8000"},
+            {"可用金额": "10001"}, {"可取金额": "10001"},
+            {"总资产": "11000", "可用金额": "11000"},
+            {"总资产": "9000", "可取金额": "10001"},
+        ]:
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(BridgeError, "资金合计"):
+                parse_snapshot(account_page(fund_overrides=overrides))
+
+    def test_available_cash_basis_still_requires_complete_positions(self):
+        """Scenario: 资金匹配仍需校验持仓
+        Given 总资产与市值加可用金额一致但持仓表为空或缺行
+        When 解析客户端快照
+        Then 拒绝更新而非伪造完整持仓
+        """
+        for rows in [[], [["000001", "测试证券", "10", "10", "10", "9", "100"]]]:
+            with self.subTest(rows=rows), self.assertRaisesRegex(BridgeError, "持仓市值"):
+                parse_snapshot(account_page("1000", rows, fund_overrides={"总资产": "10000"}))
 
     def test_missing_positions_table_is_not_empty(self):
         page = account_page()
@@ -114,6 +214,22 @@ class SnapshotScenarios(unittest.TestCase):
         with self.assertRaises(BridgeError):
             parse_snapshot(node("AXWindow", children=[node("AXTextField", "secret")]))
 
+    def test_available_cash_basis_never_bypasses_dialog_or_password_guards(self):
+        """Scenario: 资金口径兼容不绕过登录保护
+        Given 资金可按可用金额核对，但页面存在对话框或密码框
+        When 同步账户
+        Then 拒绝读取登录状态不明确的快照
+        """
+        for blocker in [node("AXSheet"), node("AXSecureTextField"),
+                        {**node("AXWindow"), "subrole": "AXDialog"},
+                        {**node("AXWindow"), "subrole": "AXSystemDialog"}]:
+            with self.subTest(blocker=blocker):
+                page = account_page(fund_overrides={"总资产": "9000"})
+                page["children"].append(blocker)
+                with self.assertRaises(BridgeError) as raised:
+                    parse_snapshot(page)
+                self.assertEqual(raised.exception.code, "TRADE_PAGE_REQUIRED")
+
     def test_duplicate_tables_and_rows_are_rejected(self):
         page = account_page()
         page["children"].append(copy.deepcopy(page["children"][1]))
@@ -136,6 +252,72 @@ class SnapshotScenarios(unittest.TestCase):
         result = parse_snapshot(page)
         self.assertNotIn("password", str(result))
         self.assertNotIn("客户姓名", str(result))
+
+
+class WatchlistScenarios(unittest.TestCase):
+    def test_selected_group_is_complete_and_not_a_broker_account(self):
+        """Scenario: 自选股只读同步
+        Given 分组设置显示两个成员且选中自选股
+        When 读取分组
+        Then 保留代码前导零并核对总数，不声称是券商持仓
+        """
+        result = parse_watchlist(watchlist_page())
+        self.assertEqual(result["group_name"], "自选股")
+        self.assertEqual(result["stocks"], [
+            {"symbol": "000001", "name": "测试证券"},
+            {"symbol": "688001", "name": "测试科创"},
+        ])
+        self.assertEqual(result["declared_count"], 2)
+        self.assertEqual(result["scope"], "selected_group")
+        self.assertFalse(result["account_id_verified"])
+        self.assertNotIn("quantity", result["stocks"][0])
+
+    def test_combined_text_and_custom_selected_group(self):
+        page = watchlist_page(selected="量化")
+        page["children"][3]["children"][0] = node("AXRow", children=[
+            node("AXStaticText", "000001 测试证券"),
+        ])
+        self.assertEqual(parse_watchlist(page)["group_name"], "量化")
+        self.assertEqual(parse_watchlist(page)["stocks"][0]["symbol"], "000001")
+
+    def test_zero_members_requires_explicit_zero_count(self):
+        """Given 选中组显示零只 When 同步 Then 返回已核验空组而不是伪造缺失数据"""
+        self.assertEqual(parse_watchlist(watchlist_page([]))["stocks"], [])
+        with self.assertRaises(BridgeError):
+            parse_watchlist(watchlist_page([], count=2))
+
+    def test_incomplete_duplicate_and_ambiguous_members_fail_closed(self):
+        pages = [
+            watchlist_page(count=3),
+            watchlist_page([("000001", "甲"), ("000001", "乙")]),
+            watchlist_page([("123", "错误代码")]),
+            watchlist_page(selected="不存在"),
+        ]
+        extra_table = watchlist_page()
+        extra_table["children"].append(copy.deepcopy(extra_table["children"][3]))
+        pages.append(extra_table)
+        for page in pages:
+            with self.subTest(page=page), self.assertRaises(BridgeError):
+                parse_watchlist(page)
+
+    def test_market_page_or_credentials_cannot_be_misread_as_watchlist(self):
+        """Given 普通行情表或登录弹窗 When 同步自选 Then 不收集凭据、不误读行情池"""
+        for page in [account_page(), node("AXWindow"), watchlist_page()]:
+            if page["role"] == "AXSheet":
+                page["children"].append(node("AXSecureTextField", "secret"))
+            with self.subTest(page=page), self.assertRaises(BridgeError):
+                parse_watchlist(page)
+
+    def test_only_the_group_sheet_is_used(self):
+        sheet = watchlist_page()
+        tree = node("AXApplication", children=[
+            node("AXWindow", children=[node("AXStaticText", "unrelated"), sheet]),
+        ])
+        self.assertEqual(len(parse_watchlist(tree)["stocks"]), 2)
+        self.assertNotIn("unrelated", str(parse_watchlist(tree)))
+        tree["children"].append(copy.deepcopy(sheet))
+        with self.assertRaises(BridgeError):
+            parse_watchlist(tree)
 
 
 class BridgeScenarios(unittest.TestCase):
@@ -161,6 +343,29 @@ class BridgeScenarios(unittest.TestCase):
         self.assertEqual(state["snapshot"], first)
         self.assertTrue(state["stale"])
         self.assertEqual(state["last_error"]["code"], "READ_FAILED")
+
+    def test_display_basis_sync_failure_preserves_snapshot_and_recovery_clears_error(self):
+        """Scenario: 兼容口径的同步仍原子更新
+        Given 已用可用金额口径成功同步
+        When 下次合计无法核对，随后恢复一致
+        Then 失败保留旧快照并标过期，恢复后更新快照并清除错误
+        """
+        self.client.page = account_page(fund_overrides={"总资产": "9000"})
+        first = self.bridge.perform("sync")["snapshot"]
+        self.client.page = account_page(fund_overrides={"总资产": "9500"})
+        with self.assertRaisesRegex(BridgeError, "资金合计"):
+            self.bridge.perform("sync")
+        failed = self.bridge.status()
+        self.assertEqual(failed["snapshot"], first)
+        self.assertTrue(failed["stale"])
+        self.assertEqual(failed["last_error"]["code"], "INCOMPLETE_SNAPSHOT")
+        self.now += timedelta(seconds=1)
+        self.client.page = account_page(fund_overrides={"总资产": "9000"})
+        recovered = self.bridge.perform("sync")
+        self.assertIsNone(recovered["last_error"])
+        self.assertFalse(recovered["stale"])
+        self.assertNotEqual(recovered["snapshot"]["captured_at"], first["captured_at"])
+        self.assertEqual(recovered["snapshot"]["funds_reconciliation"]["cash_basis"], "available_cash")
 
     def test_snapshot_expires_and_client_exit_invalidates_it(self):
         self.bridge.perform("sync")
@@ -207,6 +412,51 @@ class BridgeScenarios(unittest.TestCase):
         with self.assertRaises(BridgeError):
             self.bridge.perform("sync")
         self.assertNotIn("secret", str(self.bridge.status()))
+
+    def test_watchlist_and_account_sync_have_independent_lifetimes(self):
+        """Given 已同步自选股 When 未登录的持仓读取失败 Then 自选保留有效且账户不伪造空仓"""
+        watchlist = self.bridge.perform("sync-watchlist")["watchlist"]
+        self.assertEqual(len(watchlist["stocks"]), 2)
+        self.assertEqual(self.client.read_count, 0)
+        self.client.page = BridgeError("TRADE_PAGE_REQUIRED")
+        with self.assertRaises(BridgeError):
+            self.bridge.perform("sync")
+        result = self.bridge.status()
+        self.assertIsNone(result["snapshot"])
+        self.assertFalse(result["watchlist_stale"])
+        self.assertTrue(result["stale"])
+
+    def test_failed_watchlist_sync_does_not_invalidate_verified_account(self):
+        self.bridge.perform("sync")
+        first = self.bridge.perform("sync-watchlist")["watchlist"]
+        self.client.watchlist_page = watchlist_page(count=10)
+        with self.assertRaises(BridgeError):
+            self.bridge.perform("sync-watchlist")
+        result = self.bridge.status()
+        self.assertEqual(result["watchlist"], first)
+        self.assertTrue(result["watchlist_stale"])
+        self.assertFalse(result["stale"])
+        self.assertIsNotNone(result["watchlist_last_error"])
+
+    def test_watchlist_requires_permission_expires_and_clear_removes_both(self):
+        self.client.state["code"] = "ACCESSIBILITY_REQUIRED"
+        with self.assertRaises(BridgeError):
+            self.bridge.perform("sync-watchlist")
+        self.assertEqual(self.client.watchlist_read_count, 0)
+        self.client.state["code"] = "READY_TO_READ"
+        self.bridge.perform("sync-watchlist")
+        self.bridge.perform("sync")
+        self.now += timedelta(seconds=61)
+        self.assertTrue(self.bridge.status()["watchlist_stale"])
+        result = self.bridge.perform("clear")
+        self.assertIsNone(result["watchlist"])
+        self.assertIsNone(result["snapshot"])
+
+    def test_status_does_not_read_watchlist_and_reports_read_capability(self):
+        result = self.bridge.status()
+        self.assertIsNone(result["watchlist"])
+        self.assertEqual(self.client.watchlist_read_count, 0)
+        self.assertTrue(result["capabilities"]["watchlist_sync"])
 
 
 class LocalRequestScenarios(unittest.TestCase):
@@ -261,6 +511,9 @@ class HttpBridgeScenarios(unittest.TestCase):
     def setUp(self):
         self.client = FakeClient()
         self.server.desktop_bridge = TonghuashunBridge(self.client)
+        industries = patch("web.INDUSTRIES.refresh")
+        industries.start()
+        self.addCleanup(industries.stop)
 
     def request(self, method, route, body=None, headers=None):
         connection = http.client.HTTPConnection(*self.server.server_address, timeout=5)
@@ -289,6 +542,60 @@ class HttpBridgeScenarios(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertNotIn("connection", payload)
         self.assertEqual(self.client.launch_count, 0)
+
+    def test_trade_draft_requires_same_origin_and_never_submits(self):
+        """Given 买卖核对接口 When 跨站或携带凭据 Then 拒绝；合法请求只返回未提交草稿"""
+        headers = {"Content-Type": "application/json", "X-Desktop-Token": self.server.desktop_bridge.token}
+        body = {"side": "BUY", "symbol": "600001", "price": "10.00", "quantity": 100}
+        for current_headers in [{**headers, "Origin": "https://attacker.invalid"}, {"Content-Type": "application/json"}]:
+            status, _ = self.request("POST", "/api/client/prepare-trade", json.dumps(body), current_headers)
+            self.assertEqual(status, 403)
+        status, _ = self.request("POST", "/api/client/prepare-trade", json.dumps({**body, "password": "secret"}), headers)
+        self.assertEqual(status, 400)
+        self.assertEqual(self.client.read_count, 0)
+        status, payload = self.request("POST", "/api/client/prepare-trade", json.dumps(body), headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["draft"]["status"], "NOT_SUBMITTED")
+        self.assertEqual(self.client.launch_count, 0)
+
+    def test_history_consent_requires_local_token_and_never_accepts_credentials(self):
+        """Given 未授权历史查询 When 跨站或携带凭据申请 Then 拒绝且不读取账户"""
+        headers = {"Content-Type": "application/json", "X-Desktop-Token": self.server.desktop_bridge.token}
+        for invalid_headers, body, expected in [
+            ({**headers, "Origin": "https://attacker.invalid"}, "{}", 403),
+            ({"Content-Type": "application/json"}, "{}", 403),
+            (headers, '{"password":"never-accept"}', 400),
+        ]:
+            status, _ = self.request("POST", "/api/client/history-enable", body, invalid_headers)
+            self.assertEqual(status, expected)
+            self.assertFalse(self.server.desktop_bridge.public_history_enabled)
+        for action, enabled in [("history-enable", True), ("history-disable", False)]:
+            status, payload = self.request("POST", f"/api/client/{action}", "{}", headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["connection"]["public_history_enabled"], enabled)
+        self.assertEqual(self.client.read_count, 0)
+
+    def test_live_configuration_is_local_only_and_start_remains_blocked(self):
+        """Given 全自动实盘接口 When 保存或伪造启动 Then 同源校验生效且不会产生真实委托"""
+        from test_live_automation import PLAN
+        headers = {"Content-Type": "application/json", "X-Desktop-Token": self.server.desktop_bridge.token}
+        body = json.dumps({"config": PLAN, "expected_revision": 0})
+        for path in ("automation-save", "automation-start"):
+            status, _ = self.request("POST", f"/api/client/{path}", body, {**headers, "Origin": "https://attacker.invalid"})
+            self.assertEqual(status, 403)
+            status, _ = self.request("POST", f"/api/client/{path}", body, {"Content-Type": "application/json"})
+            self.assertEqual(status, 403)
+        status, payload = self.request("POST", "/api/client/automation-save", body, headers)
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["connection"]["automation"]["can_start"])
+        status, _ = self.request("POST", "/api/client/automation-save", body, headers)
+        self.assertEqual(status, 409)
+        status, payload = self.request("POST", "/api/client/automation-start", '{"expected_revision":1}', headers)
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["code"], "LIVE_TRADING_UNAVAILABLE")
+        status, _ = self.request("POST", "/api/client/automation-start", '{"expected_revision":1,"force":true}', headers)
+        self.assertEqual(status, 400)
+        self.assertEqual((self.client.read_count, self.client.launch_count), (0, 0))
 
     def test_given_invalid_body_or_trade_action_then_no_side_effects(self):
         headers = {"Content-Type": "application/json", "X-Desktop-Token": self.server.desktop_bridge.token}
@@ -322,6 +629,19 @@ class HttpBridgeScenarios(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_watchlist_sync_requires_same_origin_token_and_has_no_account_data(self):
+        """Given 本机自选设置页 When 经同源校验同步 Then 仅返回当前组并拒绝跨站请求"""
+        headers = {"Content-Type": "application/json", "X-Desktop-Token": self.server.desktop_bridge.token}
+        status, payload = self.request("POST", "/api/client/sync-watchlist", "{}", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["connection"]["watchlist"]["stocks"]), 2)
+        self.assertIsNone(payload["connection"]["snapshot"])
+        status, _ = self.request("POST", "/api/client/sync-watchlist", "{}", {
+            **headers, "Origin": "https://attacker.invalid",
+        })
+        self.assertEqual(status, 403)
+        self.assertEqual(self.client.watchlist_read_count, 1)
+
 
 class NativeGuardScenarios(unittest.TestCase):
     def test_non_mac_platform_never_starts_native_helper(self):
@@ -353,6 +673,59 @@ class NativeGuardScenarios(unittest.TestCase):
                 reader.walk(123)
             self.assertEqual(read_text.call_args_list[0].args, (123, "AXRole"))
             self.assertEqual(read_text.call_count, 1)
+
+    def test_reader_skips_only_the_exact_window_sharing_indicator(self):
+        """Scenario: 窗口共享指示器不被误判为登录弹窗
+        Given 额外窗口仅包含已识别的共享状态按钮
+        When 原生读取器遍历该窗口
+        Then 忽略该指示器，但保留其他对话框和含额外内容的窗口
+        """
+        from desktop.macos import AccessibilityReader
+        import time
+        indicator = node("AXButton", "WindowSharingSessionButton")
+        for subrole, children, skip in [
+            ("AXDialog", [indicator], True),
+            ("AXDialog", [indicator, node("AXSecureTextField")], False),
+            ("AXDialog", [indicator, node("AXStaticText", "登录已过期")], False),
+            ("AXDialog", [node("AXButton", "登录")], False),
+            ("AXDialog", [], False),
+            ("AXSystemDialog", [indicator], False),
+            ("AXStandardWindow", [indicator], False),
+        ]:
+            with self.subTest(subrole=subrole, children=children):
+                reader = object.__new__(AccessibilityReader)
+                reader.count = 0
+                reader.started = time.monotonic()
+                attributes = {"AXRole": "AXWindow", "AXSubrole": subrole}
+                with patch.object(reader, "text", side_effect=lambda element, name: attributes.get(name, "")), \
+                        patch.object(reader, "children", return_value=children):
+                    result = reader.walk(123)
+                if skip:
+                    self.assertIsNone(result)
+                else:
+                    self.assertEqual(result, {**node("AXWindow", children=children), "subrole": subrole})
+
+    def test_watchlist_discovery_skips_unrelated_tables_and_inputs(self):
+        """Given 主窗口含行情大表与输入框 When 查找自选设置 Then 不遍历无关数据或凭据"""
+        from desktop.macos import AccessibilityReader
+        import time
+        for role in ["AXTable", "AXTextField", "AXSecureTextField", "AXToolbar"]:
+            reader = object.__new__(AccessibilityReader)
+            reader.count = 0
+            reader.started = time.monotonic()
+            with patch.object(reader, "text", return_value=role), patch.object(reader, "children") as children:
+                self.assertEqual(reader.find_sheets(123), [])
+                children.assert_not_called()
+
+    def test_watchlist_discovery_reads_only_sheet_subtree(self):
+        from desktop.macos import AccessibilityReader
+        import time
+        reader = object.__new__(AccessibilityReader)
+        reader.count = 0
+        reader.started = time.monotonic()
+        sheet = watchlist_page()
+        with patch.object(reader, "text", return_value="AXSheet"), patch.object(reader, "walk", return_value=sheet):
+            self.assertEqual(reader.find_sheets(123), [sheet])
 
     def test_multiple_clients_are_not_guessed(self):
         from desktop.macos import MacClient

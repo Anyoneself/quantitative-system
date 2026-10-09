@@ -8,6 +8,9 @@ import re
 import secrets
 import threading
 
+from portfolio.holdings_risk import BENCHMARK, MAX_HISTORY_HOLDINGS, analyze_holdings
+from analysis.sell_advisor import build_snapshot_sell_advice
+
 
 MESSAGES = {
     "READY_TO_READ": "客户端可访问，账户登录状态尚需通过同步检查。",
@@ -21,6 +24,8 @@ MESSAGES = {
     "READ_FAILED": "客户端页面不可读；旧快照不再代表当前账户状态。",
     "TRADE_PAGE_REQUIRED": "未识别到平安证券账户，请在同花顺中登录并打开交易持仓页。",
     "INCOMPLETE_SNAPSHOT": "资金或持仓读取不完整，请保持交易持仓页可见后重试。",
+    "WATCHLIST_PAGE_REQUIRED": "请在同花顺打开自选股的“分组设置”，选中要同步的分组后重试。",
+    "INCOMPLETE_WATCHLIST": "自选分组、成员或总数无法核对，未更新自选股快照。",
 }
 
 
@@ -116,9 +121,13 @@ def parse_snapshot(tree):
             amounts[labels[texts[0]]] = _money(texts[1])
     if len(amounts) != len(labels):
         raise BridgeError("INCOMPLETE_SNAPSHOT")
-    if (abs(amounts["total_assets"] - amounts["cash_balance"] - amounts["market_value"]) > Decimal("0.05")
-            or amounts["available_cash"] > amounts["cash_balance"] + Decimal("0.05")
-            or amounts["withdrawable_cash"] > amounts["cash_balance"] + Decimal("0.05")):
+    tolerance = Decimal("0.05")
+    # 仅核对客户端显示关系，不用可用金额覆盖资金余额或推断券商账本。
+    cash_basis = next((key for key in ("cash_balance", "available_cash")
+                       if abs(amounts["total_assets"] - amounts["market_value"] - amounts[key]) <= tolerance), None)
+    if (cash_basis is None
+            or amounts["available_cash"] > amounts["cash_balance"] + tolerance
+            or amounts["withdrawable_cash"] > amounts["cash_balance"] + tolerance):
         raise BridgeError("INCOMPLETE_SNAPSHOT", "资金合计不一致，未更新快照。")
 
     table = position_tables[0]
@@ -170,22 +179,156 @@ def parse_snapshot(tree):
         "broker": "平安证券", "source": "tonghuashun_macos_accessibility",
         "account_id_verified": False,
         "funds": {key: str(value.quantize(Decimal("0.01"))) for key, value in amounts.items()},
+        "funds_reconciliation": {"scope": "client_display", "cash_basis": cash_basis},
         "positions": positions,
     }
 
 
+def parse_watchlist(tree):
+    all_nodes = list(_nodes(tree))
+    if any(item.get("role") == "AXSecureTextField" for item in all_nodes):
+        raise BridgeError("WATCHLIST_PAGE_REQUIRED")
+    sheets = [item for item in all_nodes if item.get("role") == "AXSheet"]
+    if len(sheets) != 1:
+        raise BridgeError("WATCHLIST_PAGE_REQUIRED")
+    sheet = sheets[0]
+    text = " ".join(_texts(sheet))
+    groups_count = re.findall(r"自选分组设置[（(]共(\d+)组[）)]", text)
+    stocks_count = re.findall(r"所选分组成分股设置[（(]共(\d+)只[）)]", text)
+    if len(groups_count) != 1 or len(stocks_count) != 1:
+        raise BridgeError("WATCHLIST_PAGE_REQUIRED")
+    if any(item.get("role") in ("AXTextField", "AXTextArea") for item in _nodes(sheet)):
+        raise BridgeError("INCOMPLETE_WATCHLIST")
+    group_count, declared_count = int(groups_count[0]), int(stocks_count[0])
+    if not 1 <= group_count <= 200 or not 0 <= declared_count <= 2000:
+        raise BridgeError("INCOMPLETE_WATCHLIST")
+    tables = [item for item in _nodes(sheet) if item.get("role") == "AXTable"]
+    if len(tables) != 2:
+        raise BridgeError("INCOMPLETE_WATCHLIST")
+    # 通过已选分组及成员总数校验，不从自绘行情表的空值或价格描述中猜股票代码。
+    group_tables = []
+    for table in tables:
+        rows = [item for item in _nodes(table) if item.get("role") == "AXRow"]
+        names = [" ".join(_texts(row)) for row in rows]
+        if (len(rows) != group_count or len(set(names)) != len(names)
+                or any(not name or len(name) > 80 or re.match(r"\d{6}\s", name) for name in names)):
+            continue
+        selected = [name for row, name in zip(rows, names)
+                    if any(item.get("selected") is True for item in _nodes(row))]
+        if len(selected) == 1:
+            group_tables.append((table, selected[0]))
+    if len(group_tables) != 1:
+        raise BridgeError("INCOMPLETE_WATCHLIST")
+    group_table, group_name = group_tables[0]
+    stock_table = next(table for table in tables if table is not group_table)
+    stocks = []
+    for row in _nodes(stock_table):
+        if row.get("role") != "AXRow":
+            continue
+        match = re.fullmatch(r"([0-9]{6})\s+(\S[^\r\n]{0,79})", " ".join(_texts(row)))
+        if not match:
+            raise BridgeError("INCOMPLETE_WATCHLIST")
+        stocks.append({"symbol": match[1], "name": match[2]})
+    if len(stocks) != declared_count or len({item["symbol"] for item in stocks}) != len(stocks):
+        raise BridgeError("INCOMPLETE_WATCHLIST")
+    return {
+        "source": "tonghuashun_macos_accessibility", "scope": "selected_group",
+        "account_id_verified": False, "group_name": group_name,
+        "declared_count": declared_count, "stocks": stocks,
+    }
+
+
 class TonghuashunBridge:
-    def __init__(self, client=None, clock=None):
+    def __init__(self, client=None, clock=None, history_loader=None, automation_path=None):
         if client is None:
             from desktop.macos import MacClient
             client = MacClient()
         self.client = client
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        from desktop.automation import LiveAutomationPlan
+        self.automation = LiveAutomationPlan(self.clock, automation_path)
         self.lock = threading.Lock()
         self.token = secrets.token_urlsafe(32)
         self.snapshot = None
         self.last_error = None
         self.last_attempt = None
+        self.watchlist = None
+        self.watchlist_last_error = None
+        self.watchlist_last_attempt = None
+        if history_loader is None:
+            from data.source import fetch_bars
+            history_loader = fetch_bars
+        self.history_loader = history_loader
+        self.history_cache = {}
+        self.public_history_enabled = False
+        self.risk = None
+        self.holding_advice = None
+        self.risk_pending = None
+        self.risk_running = False
+        self.risk_thread = None
+
+    def _schedule_risk(self, snapshot):
+        self.risk = analyze_holdings(snapshot, {} if self.public_history_enabled else None, now=self.clock())
+        self.holding_advice = build_snapshot_sell_advice(
+            snapshot, {} if self.public_history_enabled else None, now=self.clock())
+        self.risk_pending = None
+        if (not self.public_history_enabled or not snapshot["positions"]
+                or len(snapshot["positions"]) > MAX_HISTORY_HOLDINGS):
+            return
+        self.risk.update(status="ANALYZING", sample_status="正在获取公开历史行情")
+        self.risk_pending = copy.deepcopy(snapshot)
+        if not self.risk_running:
+            self.risk_running = True
+            self.risk_thread = threading.Thread(target=self._analyze_pending_risk, daemon=True)
+            self.risk_thread.start()
+
+    def _analyze_pending_risk(self):
+        # 单个后台读取者处理最新快照；清空或换仓后，旧任务不能回写新账户结果。
+        while True:
+            with self.lock:
+                snapshot = self.risk_pending
+                self.risk_pending = None
+                if snapshot is None:
+                    self.risk_running = False
+                    return
+            histories = {}
+            symbols = [BENCHMARK, *sorted({item["symbol"] for item in snapshot["positions"]
+                                         if Decimal(item["market_value"]) > 0})]
+            for symbol in symbols:
+                with self.lock:
+                    if (not self.public_history_enabled or self.snapshot is None
+                            or self.snapshot["snapshot_id"] != snapshot["snapshot_id"]):
+                        break
+                now = self.clock()
+                cached = self.history_cache.get(symbol)
+                if cached and 0 <= (now - cached[0]).total_seconds() < (900 if cached[1] else 60):
+                    histories[symbol] = cached[1]
+                else:
+                    try:
+                        bars = self.history_loader(symbol)
+                    except Exception:
+                        bars = []
+                    if len(self.history_cache) >= 64:
+                        self.history_cache.pop(next(iter(self.history_cache)))
+                    self.history_cache[symbol] = (now, bars)
+                    histories[symbol] = bars
+                suggestions = build_snapshot_sell_advice(snapshot, histories, now=self.clock())
+                with self.lock:
+                    if (self.public_history_enabled and self.snapshot is not None
+                            and self.snapshot["snapshot_id"] == snapshot["snapshot_id"]):
+                        self.holding_advice = suggestions
+            try:
+                report = analyze_holdings(snapshot, histories, now=self.clock())
+                suggestions = build_snapshot_sell_advice(snapshot, histories, now=self.clock())
+            except Exception:
+                report = analyze_holdings(snapshot, {}, now=self.clock())
+                report["warnings"].append("历史风险分析失败，账户快照未受影响。")
+                suggestions = build_snapshot_sell_advice(snapshot, now=self.clock())
+            with self.lock:
+                if (self.public_history_enabled and self.snapshot is not None
+                        and self.snapshot["snapshot_id"] == snapshot["snapshot_id"]):
+                    self.risk = report
+                    self.holding_advice = suggestions
 
     def _state(self):
         try:
@@ -196,53 +339,129 @@ class TonghuashunBridge:
 
     def _response(self, state):
         snapshot = copy.deepcopy(self.snapshot)
+        watchlist = copy.deepcopy(self.watchlist)
         age = None
         if snapshot:
             age = max(0, (self.clock() - datetime.fromisoformat(snapshot["captured_at"])).total_seconds())
+        watchlist_age = None
+        if watchlist:
+            watchlist_age = max(0, (self.clock() - datetime.fromisoformat(watchlist["captured_at"])).total_seconds())
+        stale = snapshot is None or age >= 60 or self.last_error is not None or state["code"] != "READY_TO_READ"
+        risk = copy.deepcopy(self.risk)
+        if risk:
+            risk["stale"] = stale
+        suggestions = copy.deepcopy(self.holding_advice)
+        if suggestions:
+            from data.industry import INDUSTRIES
+            for item in suggestions["items"]:
+                item.update(INDUSTRIES.lookup(item["symbol"]))
+            suggestions["stale"] = stale
         return {
             "client": {**state, "message": MESSAGES.get(state["code"], MESSAGES["READ_FAILED"])},
             "snapshot": snapshot,
-            "stale": snapshot is None or age > 60 or self.last_error is not None or state["code"] != "READY_TO_READ",
+            "stale": stale, "risk": risk, "public_history_enabled": self.public_history_enabled,
+            "holding_advice": suggestions,
             "expires_after_seconds": 60, "last_attempt": self.last_attempt,
             "last_error": copy.deepcopy(self.last_error),
+            "watchlist": watchlist,
+            "watchlist_stale": (watchlist is None or watchlist_age >= 60
+                               or self.watchlist_last_error is not None or state["code"] != "READY_TO_READ"),
+            "watchlist_last_attempt": self.watchlist_last_attempt,
+            "watchlist_last_error": copy.deepcopy(self.watchlist_last_error),
             "capabilities": {"launch": bool(state.get("installed")) and state["code"] not in (
                                 "MULTIPLE_CLIENTS", "CLIENT_LOCATION_REQUIRED"),
                              "read_account": state["code"] == "READY_TO_READ",
                              "live_trading": False, "oauth_callback": False,
-                             "watchlist_sync": False, "market_feed": False},
+                             "watchlist_sync": state["code"] == "READY_TO_READ", "market_feed": False},
             "request_token": self.token,
+            "automation": self.automation.status(client_ready=state["code"] == "READY_TO_READ",
+                                                  snapshot_fresh=not stale),
         }
 
     def status(self):
         with self.lock:
             return self._response(self._state())
 
+    def prepare_trade(self, payload):
+        from desktop.trading import build_trade_draft, validate_trade_input
+        ticket = validate_trade_input(payload)
+        state = self.perform("sync")
+        if state["stale"]:
+            raise BridgeError("READ_FAILED")
+        return {"connection": state, "draft": build_trade_draft(ticket, state["snapshot"], self.clock())}
+
+    def configure_automation(self, payload):
+        if not self.lock.acquire(blocking=False):
+            raise BridgeError("BUSY", "客户端操作进行中，请稍后重试。")
+        try:
+            self.automation.save(payload)
+            return self._response(self._state())
+        except RuntimeError:
+            raise BridgeError("BUSY", "实盘草案正由其他进程更新，请稍后重新检查。") from None
+        except OSError:
+            from desktop.trading import TradeInputError
+            raise TradeInputError("实盘草案存储不可用，未启动任何交易。") from None
+        finally:
+            self.lock.release()
+
+    def start_automation(self, payload):
+        from desktop.trading import TradeInputError
+        if (not isinstance(payload, dict) or set(payload) != {"expected_revision"}
+                or type(payload["expected_revision"]) is not int or payload["expected_revision"] < 0):
+            raise TradeInputError("实盘启动请求只接受明确的配置版本，不能传入强制启动或就绪标志。")
+        raise BridgeError("LIVE_TRADING_UNAVAILABLE", "实盘执行通道尚未接通，自动下单、撤单和成交回报未验证，禁止启动。")
+
     def perform(self, action):
-        if action not in {"launch", "sync", "permission", "clear"}:
+        if action not in {"launch", "sync", "sync-watchlist", "permission", "clear",
+                          "history-enable", "history-disable"}:
             raise BridgeError("ACTION_UNAVAILABLE", "只读连接不支持下单、撤单、回调或其他客户端操作。")
         if not self.lock.acquire(blocking=False):
             raise BridgeError("BUSY", "客户端操作进行中，请稍后重试。")
         try:
             if action == "clear":
                 self.snapshot = self.last_error = self.last_attempt = None
+                self.watchlist = self.watchlist_last_error = self.watchlist_last_attempt = None
+                self.risk = self.risk_pending = None
+                self.holding_advice = None
+                self.public_history_enabled = False
+            elif action in {"history-enable", "history-disable"}:
+                self.public_history_enabled = action == "history-enable"
+                self.risk_pending = None
+                if self.snapshot:
+                    self._schedule_risk(self.snapshot)
             elif action == "launch":
                 self.client.launch()
             elif action == "permission":
                 self.client.request_permission()
             else:
-                self.last_attempt = self.clock().isoformat()
+                watchlist_action = action == "sync-watchlist"
+                if watchlist_action:
+                    self.watchlist_last_attempt = self.clock().isoformat()
+                else:
+                    self.last_attempt = self.clock().isoformat()
                 state = self._state()
                 if state["code"] != "READY_TO_READ":
                     raise BridgeError(state["code"])
-                snapshot = parse_snapshot(self.client.read())
+                snapshot = (parse_watchlist(self.client.read_watchlist()) if watchlist_action
+                            else parse_snapshot(self.client.read()))
                 snapshot["captured_at"] = self.clock().isoformat()
                 snapshot["client_version"] = state["version"]
-                self.snapshot = snapshot
-                self.last_error = None
+                if watchlist_action:
+                    self.watchlist = snapshot
+                    self.watchlist_last_error = None
+                else:
+                    snapshot["snapshot_id"] = secrets.token_hex(16)
+                    self.snapshot = snapshot
+                    self.last_error = None
+                    self._schedule_risk(snapshot)
             return self._response(self._state())
         except Exception as exc:
             error = exc if isinstance(exc, BridgeError) else BridgeError("READ_FAILED")
-            self.last_error = {"code": error.code, "message": str(error)}
+            error_data = {"code": error.code, "message": str(error)}
+            if action == "sync-watchlist":
+                self.watchlist_last_error = error_data
+            else:
+                self.last_error = error_data
             raise error from None
         finally:
             self.lock.release()
